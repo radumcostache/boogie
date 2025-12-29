@@ -428,6 +428,11 @@ namespace Microsoft.Boogie
 
     public string CivlDesugaredFile { get; set; }
 
+    public bool InferMoverTypes{
+        get => inferMoverTypes;
+        set => inferMoverTypes = value; 
+    }
+
     public bool TrustMoverTypes {
       get => trustMoverTypes;
       set => trustMoverTypes = value;
@@ -595,6 +600,7 @@ namespace Microsoft.Boogie
     private bool useUnsatCoreForContractInfer = false;
     private bool trackVerificationCoverage = false;
     private bool useProverEvaluate;
+    private bool inferMoverTypes = false;
     private bool trustMoverTypes = false;
     private bool trustNoninterference = false;
     private bool trustRefinement = false;
@@ -1387,6 +1393,7 @@ namespace Microsoft.Boogie
               ps.CheckBooleanFlag("useProverEvaluate", x => useProverEvaluate = x) ||
               ps.CheckBooleanFlag("deterministicExtractLoops", x => DeterministicExtractLoops = x) ||
               ps.CheckBooleanFlag("verifySeparately", x => VerifySeparately = x) ||
+              ps.CheckBooleanFlag("inferMoverTypes", x => inferMoverTypes = x) ||
               ps.CheckBooleanFlag("trustMoverTypes", x => trustMoverTypes = x) ||
               ps.CheckBooleanFlag("trustNoninterference", x => trustNoninterference = x) ||
               ps.CheckBooleanFlag("trustRefinement", x => trustRefinement = x) ||
@@ -1891,7 +1898,9 @@ namespace Microsoft.Boogie
   /break        launch and break into debugger
 
   ---- Civl options ----------------------------------------------------------
-
+  
+  /inferMoverTypes
+                automatically infer mover types for actions marked with check
   /trustMoverTypes
                 do not verify mover type annotations on atomic action declarations
   /trustNoninterference
