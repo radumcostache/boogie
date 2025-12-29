@@ -810,6 +810,7 @@ MoverQualifier<ref MoverType moverType>
     | "right"  (. moverType = MoverType.Right; .)
     | "both"   (. moverType = MoverType.Both; .)
     | "atomic" (. moverType = MoverType.Atomic; .)
+    | "check" (. moverType = MoverType.Check; .)
   )
   .
 
@@ -1904,6 +1905,7 @@ Ident<out IToken x>
   | "both"     (. t.kind = _ident; .) // convert to ident
   | "left"     (. t.kind = _ident; .) // convert to ident
   | "right"    (. t.kind = _ident; .) // convert to ident
+  | "check"     (. t.kind = _ident; .) // convert to ident
   | "reveal"     (. t.kind = _ident; .) // convert to ident
   | "hide"     (. t.kind = _ident; .) // convert to ident
   | "push"     (. t.kind = _ident; .) // convert to ident

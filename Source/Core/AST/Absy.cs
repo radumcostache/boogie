@@ -2864,6 +2864,7 @@ namespace Microsoft.Boogie
     Right,
     Left,
     Both,
+    Check,
     None
   }
 
