@@ -6,7 +6,7 @@ namespace Microsoft.Boogie
 {
   public class MoverCheck
   {
-    private class MoverCheckContext
+    public class MoverCheckContext
     {
       public int layer;
       public IEnumerable<Expr> extraAssumptions;
@@ -31,7 +31,7 @@ namespace Microsoft.Boogie
     Dictionary<int, HashSet<Tuple<Action, Action>>> perLayerFailurePreservationCheckerCache;
     Dictionary<int, HashSet<Action>> perLayerNonblockingCheckerCache;
 
-    private MoverCheck(CivlTypeChecker civlTypeChecker, List<Declaration> decls)
+    public MoverCheck(CivlTypeChecker civlTypeChecker, List<Declaration> decls)
     {
       this.civlTypeChecker = civlTypeChecker;
       this.decls = decls;
@@ -55,7 +55,7 @@ namespace Microsoft.Boogie
         from first in civlTypeChecker.MoverActions
         from second in civlTypeChecker.MoverActions
         where first.LayerRange.OverlapsWith(second.LayerRange)
-        where first.IsRightMover || second.IsUnconditionalLeftMover
+        where (first.IsRightMover && !first.ActionDecl.moverCheckStatus.checkedRight) || (second.IsUnconditionalLeftMover && !second.ActionDecl.moverCheckStatus.checkedLeft)
         select new {first, second};
       foreach (var moverCheck in regularMoverChecks)
       {
@@ -73,7 +73,7 @@ namespace Microsoft.Boogie
         from first in civlTypeChecker.MoverActions
         from second in civlTypeChecker.MoverActions
         where first.LayerRange.OverlapsWith(second.LayerRange)
-        where second.IsConditionalLeftMover
+        where second.IsConditionalLeftMover && !second.ActionDecl.moverCheckStatus.checkedLeft
         select new {first, second};
       foreach (var moverCheck in conditionalMoverChecks)
       {
@@ -140,13 +140,13 @@ namespace Microsoft.Boogie
       this.decls.Add(proc);
     }
 
-    private void CreateRightMoverCheckers(Action rightMover, Action action)
+    public void CreateRightMoverCheckers(Action rightMover, Action action)
     {
       CreateCommutativityChecker(rightMover, action);
       CreateGatePreservationChecker(action, rightMover);
     }
 
-    private void CreateLeftMoverCheckers(Action action, Action leftMover)
+    public void CreateLeftMoverCheckers(Action action, Action leftMover)
     {
       CreateCommutativityChecker(action, leftMover);
       CreateGatePreservationChecker(leftMover, action);
@@ -160,7 +160,7 @@ namespace Microsoft.Boogie
 
     private void CreateCommutativityChecker(Action first, Action second) => CreateCommutativityChecker(first, second, null);
 
-    private void CreateCommutativityChecker(Action first, Action second, MoverCheckContext moverCheckContext)
+    public void CreateCommutativityChecker(Action first, Action second, MoverCheckContext moverCheckContext)
     {
       if (first == second && first.FirstImpl.InParams.Count == 0 && first.FirstImpl.OutParams.Count == 0)
       {
@@ -241,7 +241,7 @@ namespace Microsoft.Boogie
 
     private void CreateGatePreservationChecker(Action first, Action second) => CreateGatePreservationChecker(first, second, null);
 
-    private void CreateGatePreservationChecker(Action first, Action second, MoverCheckContext moverCheckContext)
+    public void CreateGatePreservationChecker(Action first, Action second, MoverCheckContext moverCheckContext)
     {
       if (!first.UsedGlobalVarsInGate.Intersect(second.ModifiedGlobalVars).Any())
       {
@@ -304,9 +304,9 @@ namespace Microsoft.Boogie
       AddChecker(checkerName, inputs, outputs, new List<Variable>(), requires, cmds);
     }
 
-    private void CreateFailurePreservationChecker(Action first, Action second) => CreateFailurePreservationChecker(first, second, null);
+    public void CreateFailurePreservationChecker(Action first, Action second) => CreateFailurePreservationChecker(first, second, null);
 
-    private void CreateFailurePreservationChecker(Action first, Action second, MoverCheckContext moverCheckContext)
+    public void CreateFailurePreservationChecker(Action first, Action second, MoverCheckContext moverCheckContext)
     {
       if (!first.UsedGlobalVarsInGate.Intersect(second.ModifiedGlobalVars).Any())
       {
@@ -371,9 +371,9 @@ namespace Microsoft.Boogie
       AddChecker(checkerName, inputs, outputs, new List<Variable>(), requires, cmds);
     }
 
-    private void CreateNonblockingChecker(Action action) => CreateNonblockingChecker(action, null);
+    public void CreateNonblockingChecker(Action action) => CreateNonblockingChecker(action, null);
 
-    private void CreateNonblockingChecker(Action action, MoverCheckContext moverCheckContext)
+    public void CreateNonblockingChecker(Action action, MoverCheckContext moverCheckContext)
     {
       if (!action.HasAssumeCmd)
       {

@@ -186,6 +186,164 @@ namespace Microsoft.Boogie
       }
     }
 
+    public async Task<bool> checkRightMover(Action action, CivlTypeChecker civlTypeChecker) {
+        List<Declaration> rdecls = new List<Declaration>();
+        Program program = civlTypeChecker.linearTypeChecker.program;
+
+        civlTypeChecker.AtomicActions.ForEach(x =>
+        {
+            rdecls.AddRange(new Declaration[] { x.Impl, x.Impl.Proc, x.InputOutputRelation });
+            if (x.ImplWithChoice != null)
+            {
+            rdecls.AddRange(new Declaration[]
+                { x.ImplWithChoice, x.ImplWithChoice.Proc, x.InputOutputRelationWithChoice });
+            }
+        });
+
+        // first check right moverness
+        MoverCheck moverChecking = new MoverCheck(civlTypeChecker, rdecls);
+        foreach (var other in civlTypeChecker.MoverActions.Where(a => a.LayerRange.OverlapsWith(action.LayerRange)))
+        {
+            moverChecking.CreateRightMoverCheckers(action, other);
+        }
+
+        program.AddTopLevelDeclarations(rdecls);
+        
+        UnusedVarEliminator.Eliminate(program);
+        BlockCoalescer.CoalesceBlocks(program);
+        Inline(program);
+        TextWriter output = new StringWriter();
+        var rightStats = new PipelineStatistics();
+        var outcome = await InferAndVerify(output, program, rightStats, null);
+        program.RemoveTopLevelDeclarations(x => rdecls.Contains(x));
+
+        return
+          outcome == PipelineOutcome.VerificationCompleted &&
+          rightStats.ErrorCount == 0;
+    }
+
+    public async Task<bool> checkLeftMover(Action action, CivlTypeChecker civlTypeChecker) {
+      var program = civlTypeChecker.linearTypeChecker.program;
+      List<Declaration> ldecls = new List<Declaration>();
+
+      civlTypeChecker.AtomicActions.ForEach(x =>
+      {
+          ldecls.AddRange(new Declaration[] { x.Impl, x.Impl.Proc, x.InputOutputRelation });
+          if (x.ImplWithChoice != null)
+          {
+          ldecls.AddRange(new Declaration[]
+              { x.ImplWithChoice, x.ImplWithChoice.Proc, x.InputOutputRelationWithChoice });
+          }
+      });
+
+
+      // then check left moverness
+      var lmoverChecking = new MoverCheck(civlTypeChecker, ldecls);
+      if (!action.ActionDecl.HasPreconditions) {
+        foreach (var other in civlTypeChecker.MoverActions.Where(a => a.LayerRange.OverlapsWith(action.LayerRange)))
+        {
+            lmoverChecking.CreateLeftMoverCheckers(other, action);
+        }
+        lmoverChecking.CreateNonblockingChecker(action);
+      }
+      else
+      {
+        var layer = action.ActionDecl.LayerRange.UpperLayer;
+        var subst1 = Substituter.SubstitutionFromDictionary(
+        action.ActionDecl.InParams.Zip(action.SecondImpl.InParams.Select(x => (Expr)Expr.Ident(x))).ToDictionary(x => x.Item1, x => x.Item2));
+        var moverCheckContext1 = new MoverCheck.MoverCheckContext
+        {
+          layer = layer,
+          extraAssumptions = action.Preconditions(layer, subst1).Select(assertCmd => assertCmd.Expr),
+        };
+        foreach (var other in civlTypeChecker.MoverActions.Where(a => a.LayerRange.OverlapsWith(action.LayerRange)))
+        {
+          var subst2 = Substituter.SubstitutionFromDictionary(
+                      action.ActionDecl.InParams.Zip(action.FirstImpl.InParams.Select(x => (Expr)Expr.Ident(x))).ToDictionary(x => x.Item1, x => x.Item2));
+          var moverCheckContext2 = new MoverCheck.MoverCheckContext
+          {
+            layer = layer,
+            extraAssumptions = action.Preconditions(layer, subst2).Select(assertCmd => assertCmd.Expr),
+          };
+          lmoverChecking.CreateCommutativityChecker(other, action, moverCheckContext1);
+          lmoverChecking.CreateGatePreservationChecker(action, other, moverCheckContext2);
+          lmoverChecking.CreateFailurePreservationChecker(other, action, moverCheckContext1);
+        }
+        
+        var subst = Substituter.SubstitutionFromDictionary(
+            action.ActionDecl.InParams.Zip(action.Impl.InParams.Select(x => (Expr)Expr.Ident(x))).ToDictionary(x => x.Item1, x => x.Item2));
+        var moverCheckContext = new MoverCheck.MoverCheckContext
+        {
+          layer = layer,
+          extraAssumptions = action.Preconditions(layer, subst).Select(assertCmd => assertCmd.Expr),
+        };
+        lmoverChecking.CreateNonblockingChecker(action, moverCheckContext);
+      }
+        
+      program.AddTopLevelDeclarations(ldecls);
+      
+      UnusedVarEliminator.Eliminate(program);
+      BlockCoalescer.CoalesceBlocks(program);
+      Inline(program);
+
+      var output = new StringWriter();
+      var leftStats = new PipelineStatistics();
+      var outcome = await InferAndVerify(output , program, leftStats, null);
+      program.RemoveTopLevelDeclarations(x => ldecls.Contains(x));                
+      return outcome == PipelineOutcome.VerificationCompleted && leftStats.ErrorCount == 0;
+    }
+    public async Task InferMoverTypes(CivlTypeChecker civlTypeChecker)
+        {
+            Program program = civlTypeChecker.linearTypeChecker.program;
+            var origActionDecls = program.TopLevelDeclarations.OfType<ActionDecl>();
+            var origActionImpls = program.TopLevelDeclarations.OfType<Implementation>()
+                .Where(impl => impl.Proc is ActionDecl);
+            var origYieldProcs = program.TopLevelDeclarations.OfType<YieldProcedureDecl>();
+            var origYieldImpls = program.TopLevelDeclarations.OfType<Implementation>()
+                .Where(impl => impl.Proc is YieldProcedureDecl);
+            var origYieldInvariants = program.TopLevelDeclarations.OfType<YieldInvariantDecl>();
+            var originalDecls = origActionDecls.Union<Declaration>(origActionImpls).Union(origYieldProcs)
+                .Union(origYieldImpls).Union(origYieldInvariants).ToHashSet();
+            program.RemoveTopLevelDeclarations(x => originalDecls.Contains(x));
+            foreach (var action in civlTypeChecker.MoverActions.Where(a => a.IsToBeCheckedMover))
+            {              
+                bool rightMover = await checkRightMover(action, civlTypeChecker);  
+                bool leftMover = await checkLeftMover(action, civlTypeChecker);
+
+                action.ActionDecl.moverCheckStatus.checkedLeft = true;
+                action.ActionDecl.moverCheckStatus.checkedRight = true;
+                
+                if (rightMover && leftMover)
+                {
+                    Console.WriteLine($"Action {action.ActionDecl.Name} is a both-mover");
+                    action.ActionDecl.MoverType = MoverType.Both;
+                }
+                else if (rightMover)
+                {
+                    Console.WriteLine($"Action {action.ActionDecl.Name} is a right-mover");
+                    action.ActionDecl.MoverType = MoverType.Right;
+                }
+                else if (leftMover)
+                {
+                    Console.WriteLine($"Action {action.ActionDecl.Name} is a left-mover");
+                    action.ActionDecl.MoverType = MoverType.Left;
+                }
+                else
+                {
+                    Console.WriteLine($"Action {action.ActionDecl.Name} is a non-mover");
+                    action.ActionDecl.MoverType = MoverType.Atomic;
+                }
+
+            }
+
+            // bring back original declarations after all checks are done
+            foreach (var decl in originalDecls)
+            {
+                program.AddTopLevelDeclaration(decl);
+            }
+            
+        }
+
     public static IList<IList<string>> LookForSnapshots(IList<string> fileNames)
     {
       Contract.Requires(fileNames != null);
@@ -476,6 +634,12 @@ namespace Microsoft.Boogie
         return PipelineOutcome.TypeCheckingError;
       }
 
+      if(Options.InferMoverTypes)
+      {
+        InferMoverTypes(civlTypeChecker).GetAwaiter().GetResult();
+      }
+
+      YieldSufficiencyChecker.TypeCheck(civlTypeChecker);
       if (Options.PrintFile != null && Options.PrintDesugarings)
       {
         // if PrintDesugaring option is engaged, print the file here, after resolution and type checking

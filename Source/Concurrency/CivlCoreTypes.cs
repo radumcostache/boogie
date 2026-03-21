@@ -82,6 +82,7 @@ namespace Microsoft.Boogie
 
     public bool IsRightMover => ActionDecl.MoverType == MoverType.Right || ActionDecl.MoverType == MoverType.Both;
 
+    public bool IsToBeCheckedMover => ActionDecl.MoverType == MoverType.Check;
     public bool IsLeftMover => ActionDecl.MoverType == MoverType.Left || ActionDecl.MoverType == MoverType.Both;
 
     public bool IsConditionalLeftMover => IsLeftMover && ActionDecl.HasPreconditions;

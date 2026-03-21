@@ -122,7 +122,6 @@ namespace Microsoft.Boogie
       CreateAtomicActions(actionDecls);
       CreateSequentializations(actionDecls);
       AttributeEraser.Erase(this);
-      YieldSufficiencyChecker.TypeCheck(this);
     }
 
     public static List<Requires> InlineYieldRequires(YieldProcedureDecl yieldProcedureDecl, int layerNum)

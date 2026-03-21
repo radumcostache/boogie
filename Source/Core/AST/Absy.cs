@@ -2868,9 +2868,24 @@ namespace Microsoft.Boogie
     None
   }
 
+  public class MoverCheckStatus
+  {
+    public bool checkedLeft = false;
+    public bool checkedRight = false;
+    public bool isGiven = true;
+
+    public MoverCheckStatus(bool checkedLeft, bool checkedRight, bool isGiven)
+    {
+      this.checkedLeft = checkedLeft;
+      this.checkedRight = checkedRight;
+      this.isGiven = isGiven;
+    }
+  }
+
   public class ActionDecl : Procedure
   {
     public MoverType MoverType;
+    public MoverCheckStatus moverCheckStatus;
     public List<ActionDeclRef> Creates;
     public ActionDeclRef RefinedAction;
     public ActionDeclRef InvariantAction;
@@ -2898,6 +2913,7 @@ namespace Microsoft.Boogie
       this.Asserts = asserts;
       this.PendingAsyncCtorDecl = pendingAsyncCtorDecl;
       this.IsAnonymous = name == null;
+      this.moverCheckStatus = new MoverCheckStatus(false, false, false);
       if (IsAnonymous)
       {
         this.Name = $"AnonymousAction_{this.UniqueId}";
