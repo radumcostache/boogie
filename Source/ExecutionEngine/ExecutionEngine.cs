@@ -186,7 +186,131 @@ namespace Microsoft.Boogie
       }
     }
 
-    public async Task<bool> checkRightMover(Action action, CivlTypeChecker civlTypeChecker) {
+    private static Dictionary<Tuple<Action, Action>, bool> GetChecksToCache(
+      IEnumerable<Tuple<Action, Action>> currentChecks,
+      string verifierOutput)
+    {
+      var checkList = currentChecks.ToList();
+
+      var commResults = new Dictionary<Tuple<Action, Action>, bool>();
+      var gateResults = new Dictionary<Tuple<Action, Action>, bool>();
+
+      Tuple<Action, Action> FindPairByNames(string firstName, string secondName)
+      {
+        return checkList.FirstOrDefault(pair =>
+          pair.Item1.ActionDecl.Name == firstName &&
+          pair.Item2.ActionDecl.Name == secondName);
+      }
+
+      string pendingKind = null;
+      Tuple<Action, Action> pendingPair = null;
+
+      foreach (var rawLine in verifierOutput.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None))
+      {
+        var line = rawLine.TrimEnd();
+
+        if (line.StartsWith("Verifying Civl_CommutativityChecker_"))
+        {
+          var suffix = line.Substring("Verifying Civl_CommutativityChecker_".Length);
+          if (suffix.EndsWith(" ..."))
+          {
+            suffix = suffix.Substring(0, suffix.Length - " ...".Length);
+          }
+
+          var split = suffix.LastIndexOf('_');
+          if (split >= 0)
+          {
+            var firstName = suffix.Substring(0, split);
+            var secondName = suffix.Substring(split + 1);
+            pendingPair = FindPairByNames(firstName, secondName);
+            pendingKind = pendingPair == null ? null : "comm";
+          }
+          else
+          {
+            pendingPair = null;
+            pendingKind = null;
+          }
+
+          continue;
+        }
+
+        if (line.StartsWith("Verifying Civl_GatePreservationChecker_"))
+        {
+          var suffix = line.Substring("Verifying Civl_GatePreservationChecker_".Length);
+          if (suffix.EndsWith(" ..."))
+          {
+            suffix = suffix.Substring(0, suffix.Length - " ...".Length);
+          }
+
+          var split = suffix.LastIndexOf('_');
+          if (split >= 0)
+          {
+            var firstName = suffix.Substring(0, split);
+            var secondName = suffix.Substring(split + 1);
+
+            // GatePreservationChecker(y, x) contributes to cache entry (x, y)
+            pendingPair = FindPairByNames(secondName, firstName);
+            pendingKind = pendingPair == null ? null : "gate";
+          }
+          else
+          {
+            pendingPair = null;
+            pendingKind = null;
+          }
+
+          continue;
+        }
+
+        if (pendingPair != null)
+        {
+          bool? passed = null;
+
+          if (line.Contains("]  verified") || line.Trim() == "verified")
+          {
+            passed = true;
+          }
+          else if (
+            line.Contains("]  error") ||
+            line.Trim() == "error" ||
+            line.Contains("]  timed out") ||
+            line.Contains("]  inconclusive") ||
+            line.Contains("]  out of resource") ||
+            line.Contains("]  out of memory") ||
+            line.Contains("]  solver exception"))
+          {
+            passed = false;
+          }
+
+          if (passed.HasValue)
+          {
+            if (pendingKind == "comm")
+            {
+              commResults[pendingPair] = passed.Value;
+            }
+            else if (pendingKind == "gate")
+            {
+              gateResults[pendingPair] = passed.Value;
+            }
+
+            pendingPair = null;
+            pendingKind = null;
+          }
+        }
+      }
+
+      var checksToCache = new Dictionary<Tuple<Action, Action>, bool>();
+
+      foreach (var pair in checkList)
+      {
+        var comm = commResults.TryGetValue(pair, out var c) ? c : true;
+        var gate = gateResults.TryGetValue(pair, out var g) ? g : true;
+        checksToCache[pair] = comm && gate;
+      }
+
+      return checksToCache;
+    }
+    public async Task<bool> checkRightMover(Action action, CivlTypeChecker civlTypeChecker, Dictionary<Tuple<Action, Action>, bool> previousChecksCache) 
+    {
         List<Declaration> rdecls = new List<Declaration>();
         Program program = civlTypeChecker.linearTypeChecker.program;
 
@@ -200,11 +324,20 @@ namespace Microsoft.Boogie
             }
         });
 
-        // first check right moverness
-        MoverCheck moverChecking = new MoverCheck(civlTypeChecker, rdecls);
+        MoverCheck moverChecking = new MoverCheck(civlTypeChecker, rdecls, previousChecksCache);
+        List<Tuple<Action, Action>> currentChecks = new List<Tuple<Action, Action>>();
         foreach (var other in civlTypeChecker.MoverActions.Where(a => a.LayerRange.OverlapsWith(action.LayerRange)))
         {
-            moverChecking.CreateRightMoverCheckers(action, other);
+            bool? previousCheckResult = moverChecking.GetPreviousCheck(action, other);
+            if (previousCheckResult.HasValue) {
+              if (previousCheckResult.Value == false) {
+                return false;
+              }
+            }
+            else {
+              moverChecking.CreateRightMoverCheckers(action, other);
+              currentChecks.Add(Tuple.Create(action, other));
+            }
         }
 
         program.AddTopLevelDeclarations(rdecls);
@@ -216,14 +349,28 @@ namespace Microsoft.Boogie
         var rightStats = new PipelineStatistics();
         var outcome = await InferAndVerify(output, program, rightStats, null);
         program.RemoveTopLevelDeclarations(x => rdecls.Contains(x));
-
+        var checksToCache = GetChecksToCache(currentChecks, output.ToString());
+        foreach (var kv in checksToCache)
+        {
+          previousChecksCache[kv.Key] = kv.Value;
+          if (Options.Trace)
+          {
+            Console.WriteLine($"Caching result for pair ({kv.Key.Item1.ActionDecl.Name}, {kv.Key.Item2.ActionDecl.Name}): {kv.Value}");
+          }
+        }
+        if (Options.Trace)
+        {
+          Console.WriteLine(output.ToString());
+        }
         return
           outcome == PipelineOutcome.VerificationCompleted &&
           rightStats.ErrorCount == 0;
     }
 
-    public async Task<bool> checkLeftMover(Action action, CivlTypeChecker civlTypeChecker) {
+    public async Task<bool> checkLeftMover(Action action, CivlTypeChecker civlTypeChecker, Dictionary<Tuple<Action, Action>, bool> previousChecksCache) 
+    {
       var program = civlTypeChecker.linearTypeChecker.program;
+      
       List<Declaration> ldecls = new List<Declaration>();
 
       civlTypeChecker.AtomicActions.ForEach(x =>
@@ -236,13 +383,24 @@ namespace Microsoft.Boogie
           }
       });
 
-
-      // then check left moverness
-      var lmoverChecking = new MoverCheck(civlTypeChecker, ldecls);
+      List<Tuple<Action, Action>> currentChecks = new List<Tuple<Action, Action>>();
+      var lmoverChecking = new MoverCheck(civlTypeChecker, ldecls, previousChecksCache);
       if (!action.ActionDecl.HasPreconditions) {
         foreach (var other in civlTypeChecker.MoverActions.Where(a => a.LayerRange.OverlapsWith(action.LayerRange)))
         {
-            lmoverChecking.CreateLeftMoverCheckers(other, action);
+            bool? previousCheckResult = lmoverChecking.GetPreviousCheck(other, action);
+            if (previousCheckResult.HasValue) {
+              if (previousCheckResult.Value == false) {
+                return false;
+              }
+              else {
+                lmoverChecking.CreateFailurePreservationChecker(other, action);
+              }
+            }
+            else {
+              lmoverChecking.CreateLeftMoverCheckers(other, action);
+              currentChecks.Add(Tuple.Create(other, action));
+            }
         }
         lmoverChecking.CreateNonblockingChecker(action);
       }
@@ -289,60 +447,72 @@ namespace Microsoft.Boogie
       var output = new StringWriter();
       var leftStats = new PipelineStatistics();
       var outcome = await InferAndVerify(output , program, leftStats, null);
-      program.RemoveTopLevelDeclarations(x => ldecls.Contains(x));                
+      program.RemoveTopLevelDeclarations(x => ldecls.Contains(x));
+
+      var checksToCache = GetChecksToCache(currentChecks, output.ToString());
+      foreach (var kv in checksToCache)
+      {
+        previousChecksCache[kv.Key] = kv.Value;
+      }
+      if (Options.Trace)
+      {
+        Console.WriteLine(output.ToString());
+      }             
       return outcome == PipelineOutcome.VerificationCompleted && leftStats.ErrorCount == 0;
     }
+
     public async Task InferMoverTypes(CivlTypeChecker civlTypeChecker)
-        {
-            Program program = civlTypeChecker.linearTypeChecker.program;
-            var origActionDecls = program.TopLevelDeclarations.OfType<ActionDecl>();
-            var origActionImpls = program.TopLevelDeclarations.OfType<Implementation>()
-                .Where(impl => impl.Proc is ActionDecl);
-            var origYieldProcs = program.TopLevelDeclarations.OfType<YieldProcedureDecl>();
-            var origYieldImpls = program.TopLevelDeclarations.OfType<Implementation>()
-                .Where(impl => impl.Proc is YieldProcedureDecl);
-            var origYieldInvariants = program.TopLevelDeclarations.OfType<YieldInvariantDecl>();
-            var originalDecls = origActionDecls.Union<Declaration>(origActionImpls).Union(origYieldProcs)
-                .Union(origYieldImpls).Union(origYieldInvariants).ToHashSet();
-            program.RemoveTopLevelDeclarations(x => originalDecls.Contains(x));
-            foreach (var action in civlTypeChecker.MoverActions.Where(a => a.IsToBeCheckedMover))
-            {              
-                bool rightMover = await checkRightMover(action, civlTypeChecker);  
-                bool leftMover = await checkLeftMover(action, civlTypeChecker);
+    {
+      Dictionary<Tuple<Action, Action>, bool> previousChecksCache = new Dictionary<Tuple<Action, Action>, bool>();
+      Program program = civlTypeChecker.linearTypeChecker.program;
+      var origActionDecls = program.TopLevelDeclarations.OfType<ActionDecl>();
+      var origActionImpls = program.TopLevelDeclarations.OfType<Implementation>()
+          .Where(impl => impl.Proc is ActionDecl);
+      var origYieldProcs = program.TopLevelDeclarations.OfType<YieldProcedureDecl>();
+      var origYieldImpls = program.TopLevelDeclarations.OfType<Implementation>()
+          .Where(impl => impl.Proc is YieldProcedureDecl);
+      var origYieldInvariants = program.TopLevelDeclarations.OfType<YieldInvariantDecl>();
+      var originalDecls = origActionDecls.Union<Declaration>(origActionImpls).Union(origYieldProcs)
+          .Union(origYieldImpls).Union(origYieldInvariants).ToHashSet();
+      program.RemoveTopLevelDeclarations(x => originalDecls.Contains(x));
+      foreach (var action in civlTypeChecker.MoverActions.Where(a => a.IsToBeCheckedMover))
+      {              
+          bool rightMover = await checkRightMover(action, civlTypeChecker, previousChecksCache);  
+          bool leftMover = await checkLeftMover(action, civlTypeChecker, previousChecksCache);
 
-                action.ActionDecl.moverCheckStatus.checkedLeft = true;
-                action.ActionDecl.moverCheckStatus.checkedRight = true;
-                
-                if (rightMover && leftMover)
-                {
-                    Console.WriteLine($"Action {action.ActionDecl.Name} is a both-mover");
-                    action.ActionDecl.MoverType = MoverType.Both;
-                }
-                else if (rightMover)
-                {
-                    Console.WriteLine($"Action {action.ActionDecl.Name} is a right-mover");
-                    action.ActionDecl.MoverType = MoverType.Right;
-                }
-                else if (leftMover)
-                {
-                    Console.WriteLine($"Action {action.ActionDecl.Name} is a left-mover");
-                    action.ActionDecl.MoverType = MoverType.Left;
-                }
-                else
-                {
-                    Console.WriteLine($"Action {action.ActionDecl.Name} is a non-mover");
-                    action.ActionDecl.MoverType = MoverType.Atomic;
-                }
+          action.ActionDecl.moverCheckStatus.checkedLeft = true;
+          action.ActionDecl.moverCheckStatus.checkedRight = true;
 
-            }
+          if (rightMover && leftMover)
+          {
+              Console.WriteLine($"Action {action.ActionDecl.Name} is a both-mover");
+              action.ActionDecl.MoverType = MoverType.Both;
+          }
+          else if (rightMover)
+          {
+              Console.WriteLine($"Action {action.ActionDecl.Name} is a right-mover");
+              action.ActionDecl.MoverType = MoverType.Right;
+          }
+          else if (leftMover)
+          {
+              Console.WriteLine($"Action {action.ActionDecl.Name} is a left-mover");
+              action.ActionDecl.MoverType = MoverType.Left;
+          }
+          else
+          {
+              Console.WriteLine($"Action {action.ActionDecl.Name} is a non-mover");
+              action.ActionDecl.MoverType = MoverType.Atomic;
+          }
 
-            // bring back original declarations after all checks are done
-            foreach (var decl in originalDecls)
-            {
-                program.AddTopLevelDeclaration(decl);
-            }
-            
-        }
+      }
+
+      // bring back original declarations after all checks are done
+      foreach (var decl in originalDecls)
+      {
+          program.AddTopLevelDeclaration(decl);
+      }
+      
+    }
 
     public static IList<IList<string>> LookForSnapshots(IList<string> fileNames)
     {

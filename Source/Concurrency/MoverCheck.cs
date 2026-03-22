@@ -20,7 +20,7 @@ namespace Microsoft.Boogie
 
     CivlTypeChecker civlTypeChecker;
     List<Declaration> decls;
-
+    public Dictionary<Tuple<Action, Action>, bool> previousChecksCache; // cache for previous commutativity and gate preservation checks 
     HashSet<Tuple<Action, Action>> commutativityCheckerCache;
     HashSet<Tuple<Action, Action>> gatePreservationCheckerCache;
     HashSet<Tuple<Action, Action>> failurePreservationCheckerCache;
@@ -31,7 +31,7 @@ namespace Microsoft.Boogie
     Dictionary<int, HashSet<Tuple<Action, Action>>> perLayerFailurePreservationCheckerCache;
     Dictionary<int, HashSet<Action>> perLayerNonblockingCheckerCache;
 
-    public MoverCheck(CivlTypeChecker civlTypeChecker, List<Declaration> decls)
+    public MoverCheck(CivlTypeChecker civlTypeChecker, List<Declaration> decls, Dictionary<Tuple<Action, Action>, bool> previousChecksCache = null)
     {
       this.civlTypeChecker = civlTypeChecker;
       this.decls = decls;
@@ -43,6 +43,7 @@ namespace Microsoft.Boogie
       this.perLayerGatePreservationCheckerCache = new Dictionary<int, HashSet<Tuple<Action, Action>>>();
       this.perLayerFailurePreservationCheckerCache = new Dictionary<int, HashSet<Tuple<Action, Action>>>();
       this.perLayerNonblockingCheckerCache = new Dictionary<int, HashSet<Action>>();
+      this.previousChecksCache = previousChecksCache ?? new Dictionary<Tuple<Action, Action>, bool>();
     }
 
     private ConcurrencyOptions Options => civlTypeChecker.Options;
@@ -429,5 +430,11 @@ namespace Microsoft.Boogie
     }
 
     private static string Location(IToken tok) => string.Format("{0}({1},{2})", tok.filename, tok.line, tok.col);
+    public bool? GetPreviousCheck(Action first, Action second)
+    {
+      return previousChecksCache.TryGetValue(new Tuple<Action, Action>(first, second), out var result)
+        ? result
+        : null;
+    }
   }
 }
