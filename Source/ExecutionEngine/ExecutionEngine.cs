@@ -304,23 +304,63 @@ namespace Microsoft.Boogie
       {
         var comm = commResults.TryGetValue(pair, out var c) ? c : true;
         var gate = gateResults.TryGetValue(pair, out var g) ? g : true;
+
         checksToCache[pair] = comm && gate;
+
+        // Immediate asymmetric consequence for pair (X, Y):
+        // if either comm or gate fails, then X is not right and Y is not left.
+        if (!comm || !gate)
+        {
+          Console.WriteLine($"[MoverInference] {pair.Item1.ActionDecl.Name} is non-right and {pair.Item2.ActionDecl.Name} is non-left");
+          MoverCheck.ApplyRightCheckResult(pair.Item1, false);
+          MoverCheck.ApplyLeftCheckResult(pair.Item2, false);
+        }
       }
 
       return checksToCache;
+    }
+    private HashSet<Declaration> GetOriginalCivlDecls(Program program)
+    {
+      var origActionDecls = program.TopLevelDeclarations.OfType<ActionDecl>();
+      var origActionImpls = program.TopLevelDeclarations.OfType<Implementation>()
+          .Where(impl => impl.Proc is ActionDecl);
+      var origYieldProcs = program.TopLevelDeclarations.OfType<YieldProcedureDecl>();
+      var origYieldImpls = program.TopLevelDeclarations.OfType<Implementation>()
+          .Where(impl => impl.Proc is YieldProcedureDecl);
+      var origYieldInvariants = program.TopLevelDeclarations.OfType<YieldInvariantDecl>();
+
+      return origActionDecls.Union<Declaration>(origActionImpls)
+          .Union(origYieldProcs)
+          .Union(origYieldImpls)
+          .Union(origYieldInvariants)
+          .ToHashSet();
+    }
+
+    private static void RemoveDeclarations(Program program, HashSet<Declaration> decls)
+    {
+      program.RemoveTopLevelDeclarations(x => decls.Contains(x));
+    }
+
+    private static void RestoreDeclarations(Program program, HashSet<Declaration> decls)
+    {
+      foreach (var decl in decls)
+      {
+        program.AddTopLevelDeclaration(decl);
+      }
     }
     public async Task<bool> checkRightMover(Action action, CivlTypeChecker civlTypeChecker, Dictionary<Tuple<Action, Action>, bool> previousChecksCache) 
     {
         List<Declaration> rdecls = new List<Declaration>();
         Program program = civlTypeChecker.linearTypeChecker.program;
+        var originalDecls = GetOriginalCivlDecls(program);
 
         civlTypeChecker.AtomicActions.ForEach(x =>
         {
             rdecls.AddRange(new Declaration[] { x.Impl, x.Impl.Proc, x.InputOutputRelation });
             if (x.ImplWithChoice != null)
             {
-            rdecls.AddRange(new Declaration[]
-                { x.ImplWithChoice, x.ImplWithChoice.Proc, x.InputOutputRelationWithChoice });
+              rdecls.AddRange(new Declaration[]
+                  { x.ImplWithChoice, x.ImplWithChoice.Proc, x.InputOutputRelationWithChoice });
             }
         });
 
@@ -340,36 +380,45 @@ namespace Microsoft.Boogie
             }
         }
 
-        program.AddTopLevelDeclarations(rdecls);
-        
-        UnusedVarEliminator.Eliminate(program);
-        BlockCoalescer.CoalesceBlocks(program);
-        Inline(program);
-        TextWriter output = new StringWriter();
-        var rightStats = new PipelineStatistics();
-        var outcome = await InferAndVerify(output, program, rightStats, null);
-        program.RemoveTopLevelDeclarations(x => rdecls.Contains(x));
-        var checksToCache = GetChecksToCache(currentChecks, output.ToString());
-        foreach (var kv in checksToCache)
+        RemoveDeclarations(program, originalDecls);
+        try
         {
-          previousChecksCache[kv.Key] = kv.Value;
+          program.AddTopLevelDeclarations(rdecls);
+
+          UnusedVarEliminator.Eliminate(program);
+          BlockCoalescer.CoalesceBlocks(program);
+          Inline(program);
+
+          TextWriter output = new StringWriter();
+          var rightStats = new PipelineStatistics();
+          var outcome = await InferAndVerify(output, program, rightStats, null);
+
+          var checksToCache = GetChecksToCache(currentChecks, output.ToString());
+          foreach (var kv in checksToCache)
+          {
+            previousChecksCache[kv.Key] = kv.Value;
+            if (Options.Trace)
+            {
+              Console.WriteLine($"Caching result for pair ({kv.Key.Item1.ActionDecl.Name}, {kv.Key.Item2.ActionDecl.Name}): {kv.Value}");
+            }
+          }
           if (Options.Trace)
           {
-            Console.WriteLine($"Caching result for pair ({kv.Key.Item1.ActionDecl.Name}, {kv.Key.Item2.ActionDecl.Name}): {kv.Value}");
+            Console.WriteLine(output.ToString());
           }
-        }
-        if (Options.Trace)
-        {
-          Console.WriteLine(output.ToString());
-        }
-        return
-          outcome == PipelineOutcome.VerificationCompleted &&
-          rightStats.ErrorCount == 0;
-    }
 
+          return outcome == PipelineOutcome.VerificationCompleted && rightStats.ErrorCount == 0;
+        }
+        finally
+        {
+          program.RemoveTopLevelDeclarations(x => rdecls.Contains(x));
+          RestoreDeclarations(program, originalDecls);
+        }
+    }
     public async Task<bool> checkLeftMover(Action action, CivlTypeChecker civlTypeChecker, Dictionary<Tuple<Action, Action>, bool> previousChecksCache) 
     {
       var program = civlTypeChecker.linearTypeChecker.program;
+      var originalDecls = GetOriginalCivlDecls(program);
       
       List<Declaration> ldecls = new List<Declaration>();
 
@@ -378,8 +427,8 @@ namespace Microsoft.Boogie
           ldecls.AddRange(new Declaration[] { x.Impl, x.Impl.Proc, x.InputOutputRelation });
           if (x.ImplWithChoice != null)
           {
-          ldecls.AddRange(new Declaration[]
-              { x.ImplWithChoice, x.ImplWithChoice.Proc, x.InputOutputRelationWithChoice });
+            ldecls.AddRange(new Declaration[]
+                { x.ImplWithChoice, x.ImplWithChoice.Proc, x.InputOutputRelationWithChoice });
           }
       });
 
@@ -408,7 +457,7 @@ namespace Microsoft.Boogie
       {
         var layer = action.ActionDecl.LayerRange.UpperLayer;
         var subst1 = Substituter.SubstitutionFromDictionary(
-        action.ActionDecl.InParams.Zip(action.SecondImpl.InParams.Select(x => (Expr)Expr.Ident(x))).ToDictionary(x => x.Item1, x => x.Item2));
+          action.ActionDecl.InParams.Zip(action.SecondImpl.InParams.Select(x => (Expr)Expr.Ident(x))).ToDictionary(x => x.Item1, x => x.Item2));
         var moverCheckContext1 = new MoverCheck.MoverCheckContext
         {
           layer = layer,
@@ -437,31 +486,253 @@ namespace Microsoft.Boogie
         };
         lmoverChecking.CreateNonblockingChecker(action, moverCheckContext);
       }
-        
-      program.AddTopLevelDeclarations(ldecls);
-      
-      UnusedVarEliminator.Eliminate(program);
-      BlockCoalescer.CoalesceBlocks(program);
-      Inline(program);
 
-      var output = new StringWriter();
-      var leftStats = new PipelineStatistics();
-      var outcome = await InferAndVerify(output , program, leftStats, null);
-      program.RemoveTopLevelDeclarations(x => ldecls.Contains(x));
-
-      var checksToCache = GetChecksToCache(currentChecks, output.ToString());
-      foreach (var kv in checksToCache)
+      RemoveDeclarations(program, originalDecls);
+      try
       {
-        previousChecksCache[kv.Key] = kv.Value;
+        program.AddTopLevelDeclarations(ldecls);
+
+        UnusedVarEliminator.Eliminate(program);
+        BlockCoalescer.CoalesceBlocks(program);
+        Inline(program);
+
+        var output = new StringWriter();
+        var leftStats = new PipelineStatistics();
+        var outcome = await InferAndVerify(output , program, leftStats, null);
+
+        var checksToCache = GetChecksToCache(currentChecks, output.ToString());
+        foreach (var kv in checksToCache)
+        {
+          previousChecksCache[kv.Key] = kv.Value;
+        }
+        if (Options.Trace)
+        {
+          Console.WriteLine(output.ToString());
+        }
+
+        return outcome == PipelineOutcome.VerificationCompleted && leftStats.ErrorCount == 0;
       }
-      if (Options.Trace)
+      finally
       {
-        Console.WriteLine(output.ToString());
-      }             
-      return outcome == PipelineOutcome.VerificationCompleted && leftStats.ErrorCount == 0;
+        program.RemoveTopLevelDeclarations(x => ldecls.Contains(x));
+        RestoreDeclarations(program, originalDecls);
+      }
+    }
+    private Dictionary<Action, (bool, bool)> CollectObligations(CivlTypeChecker civlTypeChecker)
+    {
+      var result = new Dictionary<Action, (bool, bool)>();
+
+      foreach (var impl in civlTypeChecker.program.Implementations.Where(impl => impl.Proc is YieldProcedureDecl))
+      {
+        var yieldingProc = (YieldProcedureDecl)impl.Proc;
+        impl.PruneUnreachableBlocks(Options);
+
+        foreach (int layerNum in civlTypeChecker.AllRefinementLayers.Where(l => l <= yieldingProc.Layer))
+        {
+          var graph = YieldRegionExtractor.BuildGraph(civlTypeChecker, yieldingProc, impl, layerNum);
+          var regions = YieldRegionExtractor.ExtractRegions(graph);
+
+          foreach (var region in regions)
+          {
+            var obligations = YieldRegionExtractor.AnalyzeRegion(region);
+
+            foreach (var action in obligations.MustCheckRightActions)
+            {
+              var current = result.TryGetValue(action, out var x) ? x : (false, false);
+              result[action] = (true, current.Item2);
+            }
+
+            foreach (var action in obligations.MustCheckLeftActions)
+            {
+              var current = result.TryGetValue(action, out var x) ? x : (false, false);
+              result[action] = (current.Item1, true);
+            }
+          }
+        }
+      }
+
+      return result;
+    }
+    private Action PickFirstUncheckedCheckAction(CivlTypeChecker civlTypeChecker)
+    {
+      foreach (var impl in civlTypeChecker.program.Implementations.Where(impl => impl.Proc is YieldProcedureDecl))
+      {
+        var yieldingProc = (YieldProcedureDecl)impl.Proc;
+        impl.PruneUnreachableBlocks(Options);
+
+        foreach (int layerNum in civlTypeChecker.AllRefinementLayers.Where(l => l <= yieldingProc.Layer))
+        {
+          var graph = YieldRegionExtractor.BuildGraph(civlTypeChecker, yieldingProc, impl, layerNum);
+          var regions = YieldRegionExtractor.ExtractRegions(graph);
+
+          foreach (var region in regions)
+          {
+            var unresolved = YieldRegionExtractor.OrderedCheckEdges(region)
+              .Where(edge =>
+              {
+                var action = edge.Action;
+                if (action == null)
+                {
+                  return false;
+                }
+
+                var status = action.ActionDecl.moverCheckStatus;
+                return !status.checkedRight || !status.checkedLeft;
+              })
+              .ToList();
+
+            // Do not use fallback if there is only one unresolved check edge left in this region.
+            if (unresolved.Count < 2)
+            {
+              continue;
+            }
+
+            return unresolved[0].Action;
+          }
+        }
+      }
+
+      return null;
+    }
+
+    private async Task<bool> ProcessOneMoverInferenceStep(
+      CivlTypeChecker civlTypeChecker,
+      Dictionary<Tuple<Action, Action>, bool> previousChecksCache)
+    {
+      var obligations = CollectObligations(civlTypeChecker);
+
+      foreach (var kv in obligations)
+      {
+        var action = kv.Key;
+        var needRight = kv.Value.Item1;
+        var needLeft = kv.Value.Item2;
+        var status = action.ActionDecl.moverCheckStatus;
+
+        if (needRight && !status.checkedRight)
+        {
+          var passed = await checkRightMover(action, civlTypeChecker, previousChecksCache);
+          MoverCheck.ApplyRightCheckResult(action, passed);
+
+          if (Options.Trace)
+          {
+            Options.OutputWriter.WriteLine($"[MoverInference] Required right check for {action.ActionDecl.Name}: {passed}");
+          }
+          return true;
+        }
+
+        if (needLeft && !status.checkedLeft)
+        {
+          var passed = await checkLeftMover(action, civlTypeChecker, previousChecksCache);
+          MoverCheck.ApplyLeftCheckResult(action, passed);
+
+          if (Options.Trace)
+          {
+            Options.OutputWriter.WriteLine($"[MoverInference] Required left check for {action.ActionDecl.Name}: {passed}");
+          }
+          return true;
+        }
+      }
+
+      var fallback = PickFirstUncheckedCheckAction(civlTypeChecker);
+      if (fallback != null)
+      {
+        var status = fallback.ActionDecl.moverCheckStatus;
+
+        if (!status.checkedRight)
+        {
+          var passed = await checkRightMover(fallback, civlTypeChecker, previousChecksCache);
+          MoverCheck.ApplyRightCheckResult(fallback, passed);
+
+          if (Options.Trace)
+          {
+            Options.OutputWriter.WriteLine($"[MoverInference] Fallback right check for {fallback.ActionDecl.Name}: {passed}");
+          }
+          return true;
+        }
+
+        if (!status.checkedLeft)
+        {
+          var passed = await checkLeftMover(fallback, civlTypeChecker, previousChecksCache);
+          MoverCheck.ApplyLeftCheckResult(fallback, passed);
+
+          if (Options.Trace)
+          {
+            Options.OutputWriter.WriteLine($"[MoverInference] Fallback left check for {fallback.ActionDecl.Name}: {passed}");
+          }
+          return true;
+        }
+      }
+
+      return false;
     }
 
     public async Task InferMoverTypes(CivlTypeChecker civlTypeChecker)
+    {
+      Dictionary<Tuple<Action, Action>, bool> previousChecksCache = new Dictionary<Tuple<Action, Action>, bool>();
+
+      foreach (var action in civlTypeChecker.MoverActions.Where(a => a.IsToBeCheckedMover))
+      {
+        action.ActionDecl.MoverType = MoverType.Check;
+        action.ActionDecl.moverCheckStatus.checkedLeft = false;
+        action.ActionDecl.moverCheckStatus.checkedRight = false;
+        action.ActionDecl.moverCheckStatus.isGiven = false;
+      }
+
+      while (await ProcessOneMoverInferenceStep(civlTypeChecker, previousChecksCache))
+      {
+      }
+
+      foreach (var action in civlTypeChecker.MoverActions.Where(a => a.IsToBeCheckedMover))
+      {
+        var status = action.ActionDecl.moverCheckStatus;
+
+        bool rightPassed =
+          status.checkedRight &&
+          (action.ActionDecl.MoverType == MoverType.Right ||
+          action.ActionDecl.MoverType == MoverType.Both);
+
+        bool leftPassed =
+          status.checkedLeft &&
+          (action.ActionDecl.MoverType == MoverType.Left ||
+          action.ActionDecl.MoverType == MoverType.Both);
+
+        if (rightPassed && leftPassed)
+        {
+          action.ActionDecl.MoverType = MoverType.Both;
+        }
+        else if (rightPassed)
+        {
+          action.ActionDecl.MoverType = MoverType.Right;
+        }
+        else if (leftPassed)
+        {
+          action.ActionDecl.MoverType = MoverType.Left;
+        }
+        else
+        {
+          action.ActionDecl.MoverType = MoverType.Atomic;
+        }
+
+        if (Options.Trace)
+        {
+          Options.OutputWriter.WriteLine(
+            $"[MoverInference] Final {action.ActionDecl.Name}: " +
+            $"MoverType={action.ActionDecl.MoverType}, " +
+            $"checkedRight={status.checkedRight}, checkedLeft={status.checkedLeft}");
+        }
+      }
+
+      var remainingChecks = civlTypeChecker.MoverActions
+        .Where(a => a.IsToBeCheckedMover && a.ActionDecl.MoverType == MoverType.Check)
+        .ToList();
+
+      if (remainingChecks.Any())
+      {
+        throw new Exception("InferMoverTypes left actions with MoverType.Check: " +
+          string.Join(", ", remainingChecks.Select(a => a.ActionDecl.Name)));
+      }
+    }
+    public async Task InferMoverTypesBrute(CivlTypeChecker civlTypeChecker)
     {
       Dictionary<Tuple<Action, Action>, bool> previousChecksCache = new Dictionary<Tuple<Action, Action>, bool>();
       Program program = civlTypeChecker.linearTypeChecker.program;
@@ -804,9 +1075,39 @@ namespace Microsoft.Boogie
         return PipelineOutcome.TypeCheckingError;
       }
 
+      // if (Options.Trace)
+      // {
+      //   foreach (var impl in civlTypeChecker.program.Implementations.Where(impl => impl.Proc is YieldProcedureDecl))
+      //   {
+      //     var yieldingProc = (YieldProcedureDecl)impl.Proc;
+      //     impl.PruneUnreachableBlocks(Options);
+
+      //     foreach (int layerNum in civlTypeChecker.AllRefinementLayers.Where(l => l <= yieldingProc.Layer))
+      //     {
+      //       var graph = YieldRegionExtractor.BuildGraph(civlTypeChecker, yieldingProc, impl, layerNum);
+      //       Options.OutputWriter.WriteLine($"=== Graph for {impl.Name} at layer {layerNum} ===");
+      //       Options.OutputWriter.WriteLine(YieldRegionExtractor.PrintGraph(graph));
+
+      //       var regions = YieldRegionExtractor.ExtractRegions(graph);
+      //       YieldRegionExtractor.ValidateRegions(regions);
+
+      //       Options.OutputWriter.WriteLine($"=== Regions for {impl.Name} at layer {layerNum}: {regions.Count} ===");
+      //       int i = 0;
+      //       foreach (var region in regions)
+      //       {
+      //         Options.OutputWriter.WriteLine($"Region {i++}:");
+      //         Options.OutputWriter.WriteLine(YieldRegionExtractor.PrintRegion(region));
+
+      //         var obligations = YieldRegionExtractor.AnalyzeRegion(region);
+      //         Options.OutputWriter.WriteLine(YieldRegionExtractor.PrintObligations(obligations));
+      //       }
+      //     }
+      //   }
+      // }
+      
       if(Options.InferMoverTypes)
       {
-        InferMoverTypes(civlTypeChecker).GetAwaiter().GetResult();
+        InferMoverTypes(civlTypeChecker).GetAwaiter().GetResult();     
       }
 
       YieldSufficiencyChecker.TypeCheck(civlTypeChecker);

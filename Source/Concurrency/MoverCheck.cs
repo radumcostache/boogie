@@ -30,7 +30,112 @@ namespace Microsoft.Boogie
     Dictionary<int, HashSet<Tuple<Action, Action>>> perLayerGatePreservationCheckerCache;
     Dictionary<int, HashSet<Tuple<Action, Action>>> perLayerFailurePreservationCheckerCache;
     Dictionary<int, HashSet<Action>> perLayerNonblockingCheckerCache;
+    
+    public static bool RightPassed(Action action)
+    {
+      var status = action.ActionDecl.moverCheckStatus;
+      return status.checkedRight &&
+            (action.ActionDecl.MoverType == MoverType.Right ||
+              action.ActionDecl.MoverType == MoverType.Both);
+    }
 
+    public static bool LeftPassed(Action action)
+    {
+      var status = action.ActionDecl.moverCheckStatus;
+      return status.checkedLeft &&
+            (action.ActionDecl.MoverType == MoverType.Left ||
+              action.ActionDecl.MoverType == MoverType.Both);
+    }
+
+    public static bool RightFailed(Action action)
+    {
+      var status = action.ActionDecl.moverCheckStatus;
+      return status.checkedRight && !RightPassed(action);
+    }
+
+    public static bool LeftFailed(Action action)
+    {
+      var status = action.ActionDecl.moverCheckStatus;
+      return status.checkedLeft && !LeftPassed(action);
+    }
+    public static bool IsKnownNonLeft(YieldRegionExtractor.CivlEdge edge)
+    {
+      if (edge.Action == null)
+      {
+        return edge.Label == "R" || edge.Label == "N";
+      }
+
+      return LeftFailed(edge.Action) ||
+            edge.Action.ActionDecl.MoverType == MoverType.Right ||
+            edge.Action.ActionDecl.MoverType == MoverType.Atomic;
+    }
+    public static bool IsKnownNonRight(YieldRegionExtractor.CivlEdge edge)
+    {
+      if (edge.Action == null)
+      {
+        return edge.Label == "L" || edge.Label == "N";
+      }
+
+      return RightFailed(edge.Action) ||
+            edge.Action.ActionDecl.MoverType == MoverType.Left ||
+            edge.Action.ActionDecl.MoverType == MoverType.Atomic;
+    }
+
+    public static void ApplyRightCheckResult(Action action, bool passed)
+    {
+      var status = action.ActionDecl.moverCheckStatus;
+      status.checkedRight = true;
+
+      if (passed)
+      {
+        if (action.ActionDecl.MoverType == MoverType.Left)
+        {
+          action.ActionDecl.MoverType = MoverType.Both;
+        }
+        else if (action.ActionDecl.MoverType == MoverType.Check)
+        {
+          action.ActionDecl.MoverType = MoverType.Right;
+        }
+      }
+      else
+      {
+        if (status.checkedLeft)
+        {
+          if (action.ActionDecl.MoverType == MoverType.Check)
+          {
+            action.ActionDecl.MoverType = MoverType.Atomic;
+          }
+        }
+      }
+    }
+
+    public static void ApplyLeftCheckResult(Action action, bool passed)
+    {
+      var status = action.ActionDecl.moverCheckStatus;
+      status.checkedLeft = true;
+
+      if (passed)
+      {
+        if (action.ActionDecl.MoverType == MoverType.Right)
+        {
+          action.ActionDecl.MoverType = MoverType.Both;
+        }
+        else if (action.ActionDecl.MoverType == MoverType.Check)
+        {
+          action.ActionDecl.MoverType = MoverType.Left;
+        }
+      }
+      else
+      {
+        if (status.checkedRight)
+        {
+          if (action.ActionDecl.MoverType == MoverType.Check)
+          {
+            action.ActionDecl.MoverType = MoverType.Atomic;
+          }
+        }
+      }
+    }
     public MoverCheck(CivlTypeChecker civlTypeChecker, List<Declaration> decls, Dictionary<Tuple<Action, Action>, bool> previousChecksCache = null)
     {
       this.civlTypeChecker = civlTypeChecker;
