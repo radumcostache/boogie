@@ -384,6 +384,7 @@ namespace Microsoft.Boogie
         try
         {
           program.AddTopLevelDeclarations(rdecls);
+          new LinearTypeChecker.LinearTypeEraser().VisitProgram(program);
 
           UnusedVarEliminator.Eliminate(program);
           BlockCoalescer.CoalesceBlocks(program);
@@ -491,10 +492,20 @@ namespace Microsoft.Boogie
       try
       {
         program.AddTopLevelDeclarations(ldecls);
+        new LinearTypeChecker.LinearTypeEraser().VisitProgram(program);
 
         UnusedVarEliminator.Eliminate(program);
         BlockCoalescer.CoalesceBlocks(program);
         Inline(program);
+
+        // TODO: Remove this piece of code once I figure out what is not working in the GC.bpl
+        if (action.ActionDecl.Name == "AtomicSweepNext")
+        { int oldPrintUnstructured = Options.PrintUnstructured;
+        Options.PrintUnstructured = 1;
+        PrintBplFile("AtomicSweepNext.bpl", program, false, false,
+          Options.PrettyPrint);
+        Options.PrintUnstructured = oldPrintUnstructured; }
+
 
         var output = new StringWriter();
         var leftStats = new PipelineStatistics();
@@ -577,7 +588,7 @@ namespace Microsoft.Boogie
                 }
 
                 var status = action.ActionDecl.moverCheckStatus;
-                return !status.checkedRight || !status.checkedLeft;
+                return !status.checkedRight && !status.checkedLeft;
               })
               .ToList();
 
@@ -666,6 +677,118 @@ namespace Microsoft.Boogie
       return false;
     }
 
+    private List<(Action action, string implName, int layerNum)> CollectUnsafeUnresolvedActions(CivlTypeChecker civlTypeChecker)
+    {
+      var bad = new List<(Action action, string implName, int layerNum)>();
+
+      foreach (var impl in civlTypeChecker.program.Implementations.Where(impl => impl.Proc is YieldProcedureDecl))
+      {
+        var yieldingProc = (YieldProcedureDecl)impl.Proc;
+        impl.PruneUnreachableBlocks(Options);
+
+        foreach (int layerNum in civlTypeChecker.AllRefinementLayers.Where(l => l <= yieldingProc.Layer))
+        {
+          var graph = YieldRegionExtractor.BuildGraph(civlTypeChecker, yieldingProc, impl, layerNum);
+          var regions = YieldRegionExtractor.ExtractRegions(graph);
+
+          foreach (var region in regions)
+          {
+            var unresolved = YieldRegionExtractor.OrderedCheckEdges(region)
+              .Select(e => e.Action)
+              .Where(a => a != null && a.ActionDecl.MoverType == MoverType.Check)
+              .Distinct()
+              .ToList();
+
+            if (unresolved.Count > 1)
+            {
+              foreach (var action in unresolved)
+              {
+                bad.Add((action, impl.Name, layerNum));
+              }
+            }
+          }
+        }
+      }
+
+      return bad;
+    }
+    private void DebugPrintRegionsForInference(CivlTypeChecker civlTypeChecker)
+    {
+      if (!Options.Trace)
+      {
+        return;
+      }
+
+      foreach (var impl in civlTypeChecker.program.Implementations.Where(impl => impl.Proc is YieldProcedureDecl))
+      {
+        var yieldingProc = (YieldProcedureDecl)impl.Proc;
+        impl.PruneUnreachableBlocks(Options);
+
+        foreach (int layerNum in civlTypeChecker.AllRefinementLayers.Where(l => l <= yieldingProc.Layer))
+        {
+          var graph = YieldRegionExtractor.BuildGraph(civlTypeChecker, yieldingProc, impl, layerNum);
+          var yieldEdgeCount = graph.Edges.Count(e => e.Label == "Y");
+          var checkEdgeCount = graph.Edges.Count(e => e.Label == "C" && e.Action != null);
+          var regions = YieldRegionExtractor.ExtractRegions(graph);
+
+          Options.OutputWriter.WriteLine(
+            $"[MoverInference][Graph] Impl={impl.Name}, Layer={layerNum}, " +
+            $"YieldEdges={yieldEdgeCount}, CheckEdges={checkEdgeCount}, Regions={regions.Count}");
+
+          int i = 0;
+          foreach (var region in regions)
+          {
+            var unresolved = YieldRegionExtractor.OrderedCheckEdges(region)
+              .Select(e => e.Action)
+              .Where(a => a != null)
+              .Distinct()
+              .Where(a =>
+              {
+                var s = a.ActionDecl.moverCheckStatus;
+                return !s.checkedRight || !s.checkedLeft || a.ActionDecl.MoverType == MoverType.Check;
+              })
+              .Select(a => a.ActionDecl.Name)
+              .OrderBy(x => x)
+              .ToList();
+
+            var entry = region.EntryYieldEdge == null ? "ENTRY" : region.EntryYieldEdge.Id.ToString();
+            var exit = region.ExitYieldEdge == null ? "EXIT" : region.ExitYieldEdge.Id.ToString();
+
+            Options.OutputWriter.WriteLine(
+              $"  [Region {i++}] Entry={entry}, Exit={exit}, " +
+              $"CheckEdges={YieldRegionExtractor.OrderedCheckEdges(region).Count}, " +
+              $"Unresolved={((unresolved.Count == 0) ? "-" : string.Join(", ", unresolved))}");
+          }
+        }
+      }
+    }
+
+    private void DebugPrintUnsafeUnresolved(CivlTypeChecker civlTypeChecker)
+    {
+      if (!Options.Trace)
+      {
+        return;
+      }
+
+      var bad = CollectUnsafeUnresolvedActions(civlTypeChecker);
+
+      if (!bad.Any())
+      {
+        Options.OutputWriter.WriteLine("[MoverInference][Unsafe] No unsafe unresolved actions found.");
+        return;
+      }
+
+      Options.OutputWriter.WriteLine("[MoverInference][Unsafe] Unsafe unresolved actions:");
+      foreach (var x in bad
+        .OrderBy(t => t.implName)
+        .ThenBy(t => t.layerNum)
+        .ThenBy(t => t.action.ActionDecl.Name))
+      {
+        Options.OutputWriter.WriteLine(
+          $"  Action={x.action.ActionDecl.Name}, Impl={x.implName}, Layer={x.layerNum}");
+      }
+    }
+
     public async Task InferMoverTypes(CivlTypeChecker civlTypeChecker)
     {
       Dictionary<Tuple<Action, Action>, bool> previousChecksCache = new Dictionary<Tuple<Action, Action>, bool>();
@@ -681,6 +804,8 @@ namespace Microsoft.Boogie
       while (await ProcessOneMoverInferenceStep(civlTypeChecker, previousChecksCache))
       {
       }
+
+      DebugPrintRegionsForInference(civlTypeChecker);
 
       foreach (var action in civlTypeChecker.MoverActions.Where(a => a.IsToBeCheckedMover))
       {
@@ -710,26 +835,39 @@ namespace Microsoft.Boogie
         }
         else
         {
+          action.ActionDecl.MoverType = MoverType.Check;
+        }
+      }
+
+      DebugPrintUnsafeUnresolved(civlTypeChecker);
+
+      var bad = CollectUnsafeUnresolvedActions(civlTypeChecker);
+      if (bad.Any())
+      {
+        var msg = string.Join(
+          ", ",
+          bad.Select(x => $"{x.action.ActionDecl.Name} in {x.implName} at layer {x.layerNum}").Distinct());
+
+        throw new Exception(
+          "Mover inference left multiple unresolved actions in the same yield-to-yield region; " +
+          "they cannot all be finalized as non-movers. Offending actions: " + msg);
+      }
+
+      foreach (var action in civlTypeChecker.MoverActions.Where(a => a.IsToBeCheckedMover))
+      {
+        if (action.ActionDecl.MoverType == MoverType.Check)
+        {
           action.ActionDecl.MoverType = MoverType.Atomic;
         }
 
         if (Options.Trace)
         {
+          var status = action.ActionDecl.moverCheckStatus;
           Options.OutputWriter.WriteLine(
             $"[MoverInference] Final {action.ActionDecl.Name}: " +
             $"MoverType={action.ActionDecl.MoverType}, " +
             $"checkedRight={status.checkedRight}, checkedLeft={status.checkedLeft}");
         }
-      }
-
-      var remainingChecks = civlTypeChecker.MoverActions
-        .Where(a => a.IsToBeCheckedMover && a.ActionDecl.MoverType == MoverType.Check)
-        .ToList();
-
-      if (remainingChecks.Any())
-      {
-        throw new Exception("InferMoverTypes left actions with MoverType.Check: " +
-          string.Join(", ", remainingChecks.Select(a => a.ActionDecl.Name)));
       }
     }
     public async Task InferMoverTypesBrute(CivlTypeChecker civlTypeChecker)
@@ -1075,35 +1213,43 @@ namespace Microsoft.Boogie
         return PipelineOutcome.TypeCheckingError;
       }
 
-      // if (Options.Trace)
-      // {
-      //   foreach (var impl in civlTypeChecker.program.Implementations.Where(impl => impl.Proc is YieldProcedureDecl))
-      //   {
-      //     var yieldingProc = (YieldProcedureDecl)impl.Proc;
-      //     impl.PruneUnreachableBlocks(Options);
+      if (Options.Trace)
+      {
+        foreach (var impl in civlTypeChecker.program.Implementations
+          .Where(impl => impl.Proc is YieldProcedureDecl && impl.Name == "SlowAdd"))
+        {
+          var yieldingProc = (YieldProcedureDecl)impl.Proc;
+          impl.PruneUnreachableBlocks(Options);
 
-      //     foreach (int layerNum in civlTypeChecker.AllRefinementLayers.Where(l => l <= yieldingProc.Layer))
-      //     {
-      //       var graph = YieldRegionExtractor.BuildGraph(civlTypeChecker, yieldingProc, impl, layerNum);
-      //       Options.OutputWriter.WriteLine($"=== Graph for {impl.Name} at layer {layerNum} ===");
-      //       Options.OutputWriter.WriteLine(YieldRegionExtractor.PrintGraph(graph));
+          foreach (int layerNum in civlTypeChecker.AllRefinementLayers.Where(l => l <= yieldingProc.Layer))
+          {
+            Options.OutputWriter.WriteLine($"[YieldingLoops] Impl={impl.Name}, Layer={layerNum}");
+            foreach (var kv in yieldingProc.YieldingLoops)
+            {
+              Options.OutputWriter.WriteLine(
+                $"  Header={kv.Key.Label}, YieldLayer={kv.Value.Layer}, InvCount={kv.Value.YieldInvariants.Count}");
+            }
 
-      //       var regions = YieldRegionExtractor.ExtractRegions(graph);
-      //       YieldRegionExtractor.ValidateRegions(regions);
+            var graph = YieldRegionExtractor.BuildGraph(civlTypeChecker, yieldingProc, impl, layerNum);
+            Options.OutputWriter.WriteLine($"=== Graph for {impl.Name} at layer {layerNum} ===");
+            Options.OutputWriter.WriteLine(YieldRegionExtractor.PrintGraph(graph));
 
-      //       Options.OutputWriter.WriteLine($"=== Regions for {impl.Name} at layer {layerNum}: {regions.Count} ===");
-      //       int i = 0;
-      //       foreach (var region in regions)
-      //       {
-      //         Options.OutputWriter.WriteLine($"Region {i++}:");
-      //         Options.OutputWriter.WriteLine(YieldRegionExtractor.PrintRegion(region));
+            var regions = YieldRegionExtractor.ExtractRegions(graph);
+            YieldRegionExtractor.ValidateRegions(regions);
 
-      //         var obligations = YieldRegionExtractor.AnalyzeRegion(region);
-      //         Options.OutputWriter.WriteLine(YieldRegionExtractor.PrintObligations(obligations));
-      //       }
-      //     }
-      //   }
-      // }
+            Options.OutputWriter.WriteLine($"=== Regions for {impl.Name} at layer {layerNum}: {regions.Count} ===");
+            int i = 0;
+            foreach (var region in regions)
+            {
+              Options.OutputWriter.WriteLine($"Region {i++}:");
+              Options.OutputWriter.WriteLine(YieldRegionExtractor.PrintRegion(region));
+
+              var obligations = YieldRegionExtractor.AnalyzeRegion(region);
+              Options.OutputWriter.WriteLine(YieldRegionExtractor.PrintObligations(obligations));
+            }
+          }
+        }
+      }
       
       if(Options.InferMoverTypes)
       {
