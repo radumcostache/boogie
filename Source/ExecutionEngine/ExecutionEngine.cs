@@ -809,52 +809,6 @@ namespace Microsoft.Boogie
 
       foreach (var action in civlTypeChecker.MoverActions.Where(a => a.IsToBeCheckedMover))
       {
-        var status = action.ActionDecl.moverCheckStatus;
-
-        bool rightPassed =
-          status.checkedRight &&
-          (action.ActionDecl.MoverType == MoverType.Right ||
-          action.ActionDecl.MoverType == MoverType.Both);
-
-        bool leftPassed =
-          status.checkedLeft &&
-          (action.ActionDecl.MoverType == MoverType.Left ||
-          action.ActionDecl.MoverType == MoverType.Both);
-
-        if (rightPassed && leftPassed)
-        {
-          action.ActionDecl.MoverType = MoverType.Both;
-        }
-        else if (rightPassed)
-        {
-          action.ActionDecl.MoverType = MoverType.Right;
-        }
-        else if (leftPassed)
-        {
-          action.ActionDecl.MoverType = MoverType.Left;
-        }
-        else
-        {
-          action.ActionDecl.MoverType = MoverType.Check;
-        }
-      }
-
-      DebugPrintUnsafeUnresolved(civlTypeChecker);
-
-      var bad = CollectUnsafeUnresolvedActions(civlTypeChecker);
-      if (bad.Any())
-      {
-        var msg = string.Join(
-          ", ",
-          bad.Select(x => $"{x.action.ActionDecl.Name} in {x.implName} at layer {x.layerNum}").Distinct());
-
-        throw new Exception(
-          "Mover inference left multiple unresolved actions in the same yield-to-yield region; " +
-          "they cannot all be finalized as non-movers. Offending actions: " + msg);
-      }
-
-      foreach (var action in civlTypeChecker.MoverActions.Where(a => a.IsToBeCheckedMover))
-      {
         if (action.ActionDecl.MoverType == MoverType.Check)
         {
           action.ActionDecl.MoverType = MoverType.Atomic;
