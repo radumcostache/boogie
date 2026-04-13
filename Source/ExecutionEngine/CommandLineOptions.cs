@@ -428,9 +428,14 @@ namespace Microsoft.Boogie
 
     public string CivlDesugaredFile { get; set; }
 
-    public bool InferMoverTypes{
+    public bool InferMoverTypes {
         get => inferMoverTypes;
         set => inferMoverTypes = value; 
+    }
+
+    public bool InferMoverTypesBruteForce {
+       get => inferMoverTypesBruteForce;
+       set => inferMoverTypesBruteForce = value; 
     }
 
     public bool TrustMoverTypes {
@@ -601,6 +606,7 @@ namespace Microsoft.Boogie
     private bool trackVerificationCoverage = false;
     private bool useProverEvaluate;
     private bool inferMoverTypes = false;
+    private bool inferMoverTypesBruteForce = false;
     private bool trustMoverTypes = false;
     private bool trustNoninterference = false;
     private bool trustRefinement = false;
@@ -1394,6 +1400,7 @@ namespace Microsoft.Boogie
               ps.CheckBooleanFlag("deterministicExtractLoops", x => DeterministicExtractLoops = x) ||
               ps.CheckBooleanFlag("verifySeparately", x => VerifySeparately = x) ||
               ps.CheckBooleanFlag("inferMoverTypes", x => inferMoverTypes = x) ||
+              ps.CheckBooleanFlag("inferMoverTypesBruteForce", x => inferMoverTypesBruteForce = x) ||
               ps.CheckBooleanFlag("trustMoverTypes", x => trustMoverTypes = x) ||
               ps.CheckBooleanFlag("trustNoninterference", x => trustNoninterference = x) ||
               ps.CheckBooleanFlag("trustRefinement", x => trustRefinement = x) ||
@@ -1901,6 +1908,8 @@ namespace Microsoft.Boogie
   
   /inferMoverTypes
                 automatically infer mover types for actions marked with check
+  /inferMoverTypesBruteForce
+                like inferMoverTypes, but with a brute-force search strategy
   /trustMoverTypes
                 do not verify mover type annotations on atomic action declarations
   /trustNoninterference

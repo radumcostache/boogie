@@ -106,6 +106,7 @@ public class YieldRegionExtractor
     public List<CivlEdge> InternalEdges = new();
     public Dictionary<CivlNode, List<CivlEdge>> OutEdges = new();
     public Dictionary<CivlNode, List<CivlEdge>> InEdges = new();
+    public List<CivlNode> TopologicalNodes = new();
   }
 
   private sealed class LoopInfo
@@ -166,6 +167,85 @@ public class YieldRegionExtractor
   private const string N = "N";
   private const string P = "P";
   private const string C = "C";
+  public static bool IsCurrentlyCheckEdge(CivlEdge edge)
+  {
+    if (edge.Action == null)
+    {
+      return edge.Label == C;
+    }
+
+    return edge.Action.ActionDecl.MoverType == MoverType.Check;
+  }
+
+  public static bool IsCurrentlyLeftEdge(CivlEdge edge)
+  {
+    if (edge.Action == null)
+    {
+      return edge.Label == L;
+    }
+
+    return MoverCheck.LeftPassed(edge.Action);
+  }
+
+  public static bool IsCurrentlyRightEdge(CivlEdge edge)
+  {
+    if (edge.Action == null)
+    {
+      return edge.Label == R;
+    }
+
+    return MoverCheck.RightPassed(edge.Action);
+  }
+
+  public static bool IsCurrentlyBothEdge(CivlEdge edge)
+  {
+    if (edge.Action == null)
+    {
+      return edge.Label == B;
+    }
+
+    return MoverCheck.LeftPassed(edge.Action) && MoverCheck.RightPassed(edge.Action);
+  }
+
+  public static bool IsCurrentlyAtomicEdge(CivlEdge edge)
+  {
+    if (edge.Action == null)
+    {
+      return edge.Label == N;
+    }
+
+    return MoverCheck.IsKnownNonLeft(edge) && MoverCheck.IsKnownNonRight(edge);
+  }
+
+  public static string CurrentLabel(CivlEdge edge)
+  {
+    if (edge.Action == null)
+    {
+      return edge.Label;
+    }
+
+    if (IsCurrentlyBothEdge(edge))
+    {
+      return B;
+    }
+
+    if (IsCurrentlyLeftEdge(edge))
+    {
+      return L;
+    }
+
+    if (IsCurrentlyRightEdge(edge))
+    {
+      return R;
+    }
+
+    if (IsCurrentlyAtomicEdge(edge))
+    {
+      return N;
+    }
+
+    return C;
+  }
 
   private static string MoverTypeToLabel(MoverType moverType)
   {
@@ -519,7 +599,7 @@ public class YieldRegionExtractor
     foreach (var edge in graph.Edges.OrderBy(e => e.Id))
     {
       var actionName = edge.Action?.ActionDecl?.Name ?? "-";
-      sb.AppendLine($"{edge.Id}: {edge.Source} --{edge.Label}--> {edge.Target}  action={actionName}");
+      sb.AppendLine($"{edge.Id}: {edge.Source} --{CurrentLabel(edge)}--> {edge.Target}  action={actionName}");
     }
     sb.AppendLine($"Initial: {graph.InitialState}");
     sb.AppendLine($"Finals: {string.Join(", ", graph.FinalStates)}");
@@ -653,6 +733,47 @@ public class YieldRegionExtractor
 
     return graph;
   }
+  private static List<CivlNode> ComputeTopologicalNodes(YieldRegion region)
+  {
+    var indegree = region.Nodes.ToDictionary(node => node, _ => 0);
+
+    foreach (var edge in region.InternalEdges)
+    {
+      indegree[edge.Target]++;
+    }
+
+    var ready = new List<CivlNode>(region.Nodes.Where(node => indegree[node] == 0));
+    ready.Sort((x, y) => string.CompareOrdinal(x.ToString(), y.ToString()));
+
+    var result = new List<CivlNode>();
+
+    while (ready.Count > 0)
+    {
+      var node = ready[0];
+      ready.RemoveAt(0);
+      result.Add(node);
+
+      var newlyReady = new List<CivlNode>();
+      foreach (var edge in Outgoing(region, node))
+      {
+        indegree[edge.Target]--;
+        if (indegree[edge.Target] == 0)
+        {
+          newlyReady.Add(edge.Target);
+        }
+      }
+
+      newlyReady.Sort((x, y) => string.CompareOrdinal(x.ToString(), y.ToString()));
+      ready.AddRange(newlyReady);
+    }
+
+    if (result.Count != region.Nodes.Count)
+    {
+      throw new Exception("Yield region is not acyclic, so topological order could not be computed.");
+    }
+
+    return result;
+  }
 
   private static HashSet<CivlNode> ForwardReachableInternal(CivlNode start, IEnumerable<CivlEdge> edges)
   {
@@ -684,43 +805,6 @@ public class YieldRegionExtractor
         if (visited.Add(edge.Target))
         {
           worklist.Enqueue(edge.Target);
-        }
-      }
-    }
-
-    return visited;
-  }
-
-  private static HashSet<CivlNode> BackwardReachableInternal(CivlNode target, IEnumerable<CivlEdge> edges)
-  {
-    var inMap = new Dictionary<CivlNode, List<CivlEdge>>();
-    foreach (var edge in edges)
-    {
-      if (!inMap.TryGetValue(edge.Target, out var list))
-      {
-        list = new List<CivlEdge>();
-        inMap[edge.Target] = list;
-      }
-      list.Add(edge);
-    }
-
-    var visited = new HashSet<CivlNode> { target };
-    var worklist = new Queue<CivlNode>();
-    worklist.Enqueue(target);
-
-    while (worklist.Count > 0)
-    {
-      var node = worklist.Dequeue();
-      if (!inMap.TryGetValue(node, out var prevEdges))
-      {
-        continue;
-      }
-
-      foreach (var edge in prevEdges)
-      {
-        if (visited.Add(edge.Source))
-        {
-          worklist.Enqueue(edge.Source);
         }
       }
     }
@@ -778,6 +862,8 @@ public class YieldRegionExtractor
       inList.Add(edge);
     }
 
+    region.TopologicalNodes = ComputeTopologicalNodes(region);
+
     return region;
   }
 
@@ -834,6 +920,8 @@ public class YieldRegionExtractor
       }
       inList.Add(edge);
     }
+
+    region.TopologicalNodes = ComputeTopologicalNodes(region);
 
     return region;
   }
@@ -1020,10 +1108,6 @@ public class YieldRegionExtractor
     }
   }
 
-  public static IEnumerable<CivlEdge> CheckEdges(YieldRegion region)
-  {
-    return region.InternalEdges.Where(e => e.Label == C && e.Action != null);
-  }
 
   public static string PrintRegion(YieldRegion region)
   {
@@ -1039,15 +1123,9 @@ public class YieldRegionExtractor
     {
       var actionName = edge.Action?.ActionDecl?.Name ?? "-";
       sb.AppendLine(
-        $"  {edge.Id}: {edge.Source} --{edge.Label}--> {edge.Target} action={actionName}");
+        $"  {edge.Id}: {edge.Source} --{CurrentLabel(edge)}--> {edge.Target} action={actionName}");
     }
 
-    var checkActions = CheckEdges(region)
-      .Select(e => e.Action.ActionDecl.Name)
-      .Distinct()
-      .ToList();
-
-    sb.AppendLine($"  CheckActions: {(checkActions.Count == 0 ? "-" : string.Join(", ", checkActions))}");
     return sb.ToString();
   }
 
@@ -1124,8 +1202,7 @@ public class YieldRegionExtractor
             continue;
           }
 
-          if (predEdge.Label == C && predEdge.Action != null)
-          {
+          if (IsCurrentlyCheckEdge(predEdge) && predEdge.Action != null) {
             obligations.MustCheckRightEdges.Add(predEdge);
             obligations.MustCheckRightActions.Add(predEdge.Action);
           }
@@ -1141,8 +1218,7 @@ public class YieldRegionExtractor
             continue;
           }
 
-          if (succEdge.Label == C && succEdge.Action != null)
-          {
+          if (IsCurrentlyCheckEdge(succEdge) && succEdge.Action != null) {
             obligations.MustCheckLeftEdges.Add(succEdge);
             obligations.MustCheckLeftActions.Add(succEdge.Action);
           }
@@ -1182,11 +1258,4 @@ public class YieldRegionExtractor
     return sb.ToString();
   }
 
-  public static List<CivlEdge> OrderedCheckEdges(YieldRegion region)
-  {
-    return region.InternalEdges
-      .Where(e => e.Label == C && e.Action != null)
-      .OrderBy(e => e.Id)
-      .ToList();
-  }
 }
