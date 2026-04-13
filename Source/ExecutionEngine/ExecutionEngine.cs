@@ -375,6 +375,12 @@ namespace Microsoft.Boogie
       foreach (var impl in civlTypeChecker.program.Implementations.Where(impl => impl.Proc is YieldProcedureDecl))
       {
         var yieldingProc = (YieldProcedureDecl)impl.Proc;
+
+        if (yieldingProc.IsLeftMover || yieldingProc.IsRightMover)
+        {
+          continue;
+        }
+
         impl.PruneUnreachableBlocks(Options);
 
         foreach (int layerNum in civlTypeChecker.AllRefinementLayers.Where(l => l <= yieldingProc.Layer))
@@ -384,6 +390,11 @@ namespace Microsoft.Boogie
 
           foreach (var region in regions)
           {
+            if (region.Nodes.Count <= 1)
+            {
+              continue;
+            }
+
             var record = new RegionRecord
             {
               Id = nextRegionId++,
@@ -420,6 +431,88 @@ namespace Microsoft.Boogie
       return context;
     }
 
+    private async Task CheckMoverProcedureObligations(
+      CivlTypeChecker civlTypeChecker,
+      MoverInferenceContext context)
+    {
+      foreach (var action in civlTypeChecker.MoverActions.ToList())
+      {
+        if (action.ActionDecl.moverCheckStatus.toBeCheckedLeft)
+        {
+          var passed = await checkLeftMover(action, civlTypeChecker, context);
+          if (!passed)
+          {
+            throw new Exception(
+              $"Mover inference obligation failed: action {action.ActionDecl.Name} was required to be left-mover but the check failed.");
+          }
+
+          ApplyLeftCheckResultAndRecord(context, action, true);
+        }
+      }
+      
+      foreach (var impl in civlTypeChecker.program.Implementations
+             .Where(impl => impl.Proc is YieldProcedureDecl)
+             .ToList())
+      {
+        var yieldingProc = (YieldProcedureDecl)impl.Proc;
+        impl.PruneUnreachableBlocks(Options);
+
+        bool requireRight = yieldingProc.IsRightMover;
+        bool requireLeft = yieldingProc.IsLeftMover;
+
+        if (!requireRight && !requireLeft)
+        {
+          continue;
+        }
+
+        foreach (int layerNum in civlTypeChecker.AllRefinementLayers.Where(l => l <= yieldingProc.Layer))
+        {
+          var graph = YieldRegionExtractor.BuildGraph(civlTypeChecker, yieldingProc, impl, layerNum);
+          var regions = YieldRegionExtractor.ExtractRegions(graph);
+
+          foreach (var region in regions)
+          {
+            if (region.Nodes.Count <= 1)
+            {
+              continue;
+            }
+
+            var actions = region.InternalEdges
+              .Select(e => e.Action)
+              .Where(a => a != null)
+              .Distinct()
+              .ToList();
+
+            foreach (var action in actions)
+            {
+              if (requireRight && !action.ActionDecl.moverCheckStatus.checkedRight)
+              {
+                var passed = await checkRightMover(action, civlTypeChecker, context);
+                if (!passed)
+                {
+                  throw new Exception(
+                    $"Mover inference obligation failed: action {action.ActionDecl.Name} occurs in right-mover procedure {yieldingProc.Name} but is not right-moving.");
+                }
+
+                ApplyRightCheckResultAndRecord(context, action, true);
+              }
+
+              if (requireLeft && !action.ActionDecl.moverCheckStatus.checkedLeft)
+              {
+                var passed = await checkLeftMover(action, civlTypeChecker, context);
+                if (!passed)
+                {
+                  throw new Exception(
+                    $"Mover inference obligation failed: action {action.ActionDecl.Name} occurs in left-mover procedure {yieldingProc.Name} but is not left-moving.");
+                }
+
+                ApplyLeftCheckResultAndRecord(context, action, true);
+              }
+            }
+          }
+        }
+      }
+    }
     private static bool IsKnownNonLeftAction(Action action)
     {
       var dummyEdge = new YieldRegionExtractor.CivlEdge { Action = action, Label = "C" };
@@ -943,6 +1036,8 @@ namespace Microsoft.Boogie
 
       var context = BuildMoverInferenceContext(civlTypeChecker);
 
+      await CheckMoverProcedureObligations(civlTypeChecker, context);
+
       while (true)
       {
         var batch = CollectPendingObligations(context);
@@ -963,32 +1058,14 @@ namespace Microsoft.Boogie
         if (!fullyTyped)
         {
           context.RegionStack.Push(region);
-          continue;
-        }
-
-        if (Options.Trace)
-        {
-          Options.OutputWriter.WriteLine(
-            $"[MoverInference] Region completed: Impl={region.Impl.Name}, Layer={region.LayerNum}, RegionId={region.Id}");
         }
       }
-
-      // DebugPrintRegionsForInference(civlTypeChecker);
 
       foreach (var action in civlTypeChecker.MoverActions.Where(a => a.IsToBeCheckedMover))
       {
         if (action.ActionDecl.MoverType == MoverType.Check)
         {
           action.ActionDecl.MoverType = MoverType.Atomic;
-        }
-
-        if (Options.Trace)
-        {
-          var status = action.ActionDecl.moverCheckStatus;
-          Options.OutputWriter.WriteLine(
-            $"[MoverInference] Final {action.ActionDecl.Name}: " +
-            $"MoverType={action.ActionDecl.MoverType}, " +
-            $"checkedRight={status.checkedRight}, checkedLeft={status.checkedLeft}");
         }
       }
     }

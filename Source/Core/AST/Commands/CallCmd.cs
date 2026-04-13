@@ -317,7 +317,11 @@ public class CallCmd : CallCommonality
                   while (calleeRefinedAction != null)
                   {
                     var calleeActionDecl = calleeRefinedAction.ActionDecl;
-                    if (!calleeActionDecl.IsLeftMover)
+                    if (calleeActionDecl.MoverType == MoverType.Check)
+                    {
+                      calleeActionDecl.moverCheckStatus.toBeCheckedLeft = true;
+                    }
+                    else if (!calleeActionDecl.IsLeftMover)
                     {
                       tc.Error(this,
                         $"callee abstraction in synchronized call must be a left mover: {calleeActionDecl.Name}");
@@ -379,7 +383,7 @@ public class CallCmd : CallCommonality
             {
               tc.Error(this, "async call to mover procedure must be synchronized");
             }
-            else if (!calleeDecl.IsLeftMover)
+            if (!calleeDecl.IsLeftMover)
             {
               tc.Error(this, "callee in synchronized call must be a left mover");
             }

@@ -937,7 +937,7 @@ public class YieldRegionExtractor
       foreach (var finalState in graph.FinalStates)
       {
         var region = SliceBoundaryRegion(graph, graph.InitialState, finalState, candidateEdges);
-        if (region != null)
+        if (region != null && region.Nodes.Count > 1)
         {
           regions.Add(region);
         }
@@ -981,7 +981,7 @@ public class YieldRegionExtractor
       foreach (var exitYield in exits)
       {
         var region = SliceRegion(graph, entryYield, exitYield, reachableInternalEdges);
-        if (region != null)
+        if (region != null && region.Nodes.Count > 1)
         {
           regions.Add(region);
         }
@@ -1022,7 +1022,7 @@ public class YieldRegionExtractor
       foreach (var exitYield in exits)
       {
         var region = SliceBoundaryRegion(graph, graph.InitialState, exitYield.Source, reachableInternalEdges);
-        if (region != null)
+        if (region != null && region.Nodes.Count > 1)
         {
           regions.Add(region);
         }
@@ -1059,7 +1059,7 @@ public class YieldRegionExtractor
       foreach (var finalState in graph.FinalStates)
       {
         var region = SliceBoundaryRegion(graph, entryNode, finalState, candidateEdges);
-        if (region != null)
+        if (region != null && region.Nodes.Count > 1)
         {
           regions.Add(region);
         }

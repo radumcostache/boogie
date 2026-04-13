@@ -2872,6 +2872,7 @@ namespace Microsoft.Boogie
   {
     public bool checkedLeft = false;
     public bool checkedRight = false;
+    public bool toBeCheckedLeft = false;
     public bool isGiven = true;
 
     public MoverCheckStatus(bool checkedLeft, bool checkedRight, bool isGiven)
@@ -2951,6 +2952,10 @@ namespace Microsoft.Boogie
         else if (MoverType == MoverType.Right || MoverType == MoverType.Both)
         {
           rc.Error(this, "right mover may not create pending asyncs");
+        }
+        else if (MoverType == MoverType.Check)
+        {
+          moverCheckStatus.checkedRight = true; // if we create pending asyncs, then this should never be considered as a right-mover
         }
       }
       Creates.ForEach(create =>
