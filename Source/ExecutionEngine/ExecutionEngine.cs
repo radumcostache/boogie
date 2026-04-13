@@ -1393,44 +1393,6 @@ namespace Microsoft.Boogie
           GetFileNameForConsole(Options, bplFileName));
         return PipelineOutcome.TypeCheckingError;
       }
-
-      if (Options.Trace)
-      {
-        foreach (var impl in civlTypeChecker.program.Implementations
-          .Where(impl => impl.Proc is YieldProcedureDecl && impl.Name == "SlowAdd"))
-        {
-          var yieldingProc = (YieldProcedureDecl)impl.Proc;
-          impl.PruneUnreachableBlocks(Options);
-
-          foreach (int layerNum in civlTypeChecker.AllRefinementLayers.Where(l => l <= yieldingProc.Layer))
-          {
-            Options.OutputWriter.WriteLine($"[YieldingLoops] Impl={impl.Name}, Layer={layerNum}");
-            foreach (var kv in yieldingProc.YieldingLoops)
-            {
-              Options.OutputWriter.WriteLine(
-                $"  Header={kv.Key.Label}, YieldLayer={kv.Value.Layer}, InvCount={kv.Value.YieldInvariants.Count}");
-            }
-
-            var graph = YieldRegionExtractor.BuildGraph(civlTypeChecker, yieldingProc, impl, layerNum);
-            Options.OutputWriter.WriteLine($"=== Graph for {impl.Name} at layer {layerNum} ===");
-            Options.OutputWriter.WriteLine(YieldRegionExtractor.PrintGraph(graph));
-
-            var regions = YieldRegionExtractor.ExtractRegions(graph);
-            YieldRegionExtractor.ValidateRegions(regions);
-
-            Options.OutputWriter.WriteLine($"=== Regions for {impl.Name} at layer {layerNum}: {regions.Count} ===");
-            int i = 0;
-            foreach (var region in regions)
-            {
-              Options.OutputWriter.WriteLine($"Region {i++}:");
-              Options.OutputWriter.WriteLine(YieldRegionExtractor.PrintRegion(region));
-
-              var obligations = YieldRegionExtractor.AnalyzeRegion(region);
-              Options.OutputWriter.WriteLine(YieldRegionExtractor.PrintObligations(obligations));
-            }
-          }
-        }
-      }
       
       if(Options.InferMoverTypes)
       {
