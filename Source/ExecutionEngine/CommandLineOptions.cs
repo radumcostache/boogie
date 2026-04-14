@@ -443,6 +443,11 @@ namespace Microsoft.Boogie
       set => trustMoverTypes = value;
     }
 
+    public bool TrustYieldSufficiency {
+      get => trustYieldSufficiency;
+      set => trustYieldSufficiency = value;
+    }
+
     public bool TrustNoninterference {
       get => trustNoninterference;
       set => trustNoninterference = value;
@@ -608,6 +613,7 @@ namespace Microsoft.Boogie
     private bool inferMoverTypes = false;
     private bool inferMoverTypesBruteForce = false;
     private bool trustMoverTypes = false;
+    private bool trustYieldSufficiency = false;
     private bool trustNoninterference = false;
     private bool trustRefinement = false;
     private bool trustInvariants = false;
@@ -1402,6 +1408,7 @@ namespace Microsoft.Boogie
               ps.CheckBooleanFlag("inferMoverTypes", x => inferMoverTypes = x) ||
               ps.CheckBooleanFlag("inferMoverTypesBruteForce", x => inferMoverTypesBruteForce = x) ||
               ps.CheckBooleanFlag("trustMoverTypes", x => trustMoverTypes = x) ||
+              ps.CheckBooleanFlag("trustYieldSufficiency", x => trustYieldSufficiency = x) ||
               ps.CheckBooleanFlag("trustNoninterference", x => trustNoninterference = x) ||
               ps.CheckBooleanFlag("trustRefinement", x => trustRefinement = x) ||
               ps.CheckBooleanFlag("trustInvariants", x => trustInvariants = x) ||
@@ -1912,6 +1919,8 @@ namespace Microsoft.Boogie
                 like inferMoverTypes, but with a brute-force search strategy
   /trustMoverTypes
                 do not verify mover type annotations on atomic action declarations
+  /trustYieldSufficiency`
+                do not verify that yields are sufficient for atomic actions
   /trustNoninterference
                 do not perform noninterference checks
   /trustRefinement

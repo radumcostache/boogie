@@ -83,6 +83,8 @@ public class YieldRegionExtractor
     public string Label;      // P, Y, R, L, B, N, C
     public CallCmd CallCmd;   // null if this is not a call edge
     public BoogieAction Action; // null unless this edge corresponds to an action call
+    public bool propagatedLeft = false;
+    public bool propagatedRight = false;
   }
 
   public class CivlGraph
@@ -1193,8 +1195,38 @@ public class YieldRegionExtractor
 
     foreach (var edge in region.InternalEdges)
     {
-      if (MoverCheck.IsKnownNonLeft(edge))
+      bool seedRight = false;
+      bool seedLeft = false;
+
+      if (edge.Action != null)
       {
+        if (MoverCheck.IsKnownNonLeft(edge) && !edge.propagatedRight)
+        {
+          seedRight = true;
+        }
+
+        if (MoverCheck.IsKnownNonRight(edge) && !edge.propagatedLeft)
+        {
+          seedLeft = true;
+        }
+      }
+      else
+      {
+        // Non-action edges contribute obligations according to their fixed mover label.
+        if ((IsCurrentlyRightEdge(edge) || IsCurrentlyAtomicEdge(edge)) && !edge.propagatedRight)
+        {
+          seedRight = true;
+        }
+
+        if ((IsCurrentlyLeftEdge(edge) || IsCurrentlyAtomicEdge(edge)) && !edge.propagatedLeft)
+        {
+          seedLeft = true;
+        }
+      }
+
+      if (seedRight)
+      {
+        edge.propagatedRight = true;
         foreach (var predEdge in BackwardReachableEdgesFromEdge(region, edge))
         {
           if (predEdge == edge)
@@ -1202,14 +1234,16 @@ public class YieldRegionExtractor
             continue;
           }
 
-          if (IsCurrentlyCheckEdge(predEdge) && predEdge.Action != null) {
-            obligations.MustCheckRightEdges.Add(predEdge);
+          obligations.MustCheckRightEdges.Add(predEdge);
+
+          if (predEdge.Action != null)
+          {
             obligations.MustCheckRightActions.Add(predEdge.Action);
           }
         }
       }
 
-      if (MoverCheck.IsKnownNonRight(edge))
+      if (seedLeft)
       {
         foreach (var succEdge in ForwardReachableEdgesFromEdge(region, edge))
         {
@@ -1218,8 +1252,10 @@ public class YieldRegionExtractor
             continue;
           }
 
-          if (IsCurrentlyCheckEdge(succEdge) && succEdge.Action != null) {
-            obligations.MustCheckLeftEdges.Add(succEdge);
+          obligations.MustCheckLeftEdges.Add(succEdge);
+
+          if (succEdge.Action != null)
+          {
             obligations.MustCheckLeftActions.Add(succEdge.Action);
           }
         }

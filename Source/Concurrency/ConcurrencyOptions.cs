@@ -5,6 +5,7 @@ public interface ConcurrencyOptions : CoreOptions
   bool InferMoverTypes { get; }
   bool InferMoverTypesBruteForce { get; }
   bool TrustMoverTypes { get; }
+  bool TrustYieldSufficiency{ get; }
   bool TrustSequentialization { get; }
   int TrustLayersDownto { get; }
   int TrustLayersUpto { get; }
