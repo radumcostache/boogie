@@ -196,13 +196,6 @@ namespace Microsoft.Boogie
       var commResults = new Dictionary<Tuple<Action, Action>, bool>();
       var gateResults = new Dictionary<Tuple<Action, Action>, bool>();
 
-      Tuple<Action, Action> FindPairByNames(string firstName, string secondName)
-      {
-        return checkList.FirstOrDefault(pair =>
-          pair.Item1.ActionDecl.Name == firstName &&
-          pair.Item2.ActionDecl.Name == secondName);
-      }
-
       string pendingKind = null;
       Tuple<Action, Action> pendingPair = null;
 
@@ -218,20 +211,9 @@ namespace Microsoft.Boogie
             suffix = suffix.Substring(0, suffix.Length - " ...".Length);
           }
 
-          var split = suffix.LastIndexOf('_');
-          if (split >= 0)
-          {
-            var firstName = suffix.Substring(0, split);
-            var secondName = suffix.Substring(split + 1);
-            pendingPair = FindPairByNames(firstName, secondName);
-            pendingKind = pendingPair == null ? null : "comm";
-          }
-          else
-          {
-            pendingPair = null;
-            pendingKind = null;
-          }
-
+          pendingPair = checkList.FirstOrDefault(pair =>
+            $"{pair.Item1.ActionDecl.Name}_{pair.Item2.ActionDecl.Name}" == suffix);
+          pendingKind = pendingPair == null ? null : "comm";
           continue;
         }
 
@@ -243,21 +225,9 @@ namespace Microsoft.Boogie
             suffix = suffix.Substring(0, suffix.Length - " ...".Length);
           }
 
-          var split = suffix.LastIndexOf('_');
-          if (split >= 0)
-          {
-            var firstName = suffix.Substring(0, split);
-            var secondName = suffix.Substring(split + 1);
-
-            pendingPair = FindPairByNames(secondName, firstName);
-            pendingKind = pendingPair == null ? null : "gate";
-          }
-          else
-          {
-            pendingPair = null;
-            pendingKind = null;
-          }
-
+          pendingPair = checkList.FirstOrDefault(pair =>
+            $"{pair.Item2.ActionDecl.Name}_{pair.Item1.ActionDecl.Name}" == suffix);
+          pendingKind = pendingPair == null ? null : "gate";
           continue;
         }
 
@@ -302,14 +272,40 @@ namespace Microsoft.Boogie
       {
         var comm = commResults.TryGetValue(pair, out var c) ? c : true;
         var gate = gateResults.TryGetValue(pair, out var g) ? g : true;
+        var overall = comm && gate;
 
-        context.PreviousChecksCache[pair] = comm && gate;
+        context.PreviousChecksCache[pair] = overall;
+        // Console.WriteLine(
+        //   $"Caching result for pair ({pair.Item1.ActionDecl.Name}, {pair.Item2.ActionDecl.Name}): {overall}");
 
-        if (!comm || !gate)
+        if (!overall)
         {
-          Console.WriteLine($"[MoverInference] {pair.Item1.ActionDecl.Name} is non-right and {pair.Item2.ActionDecl.Name} is non-left");
-          context.PendingNonMovers.Push((pair.Item1, NonMoverKind.NonRight));
-          context.PendingNonMovers.Push((pair.Item2, NonMoverKind.NonLeft));
+          var x = pair.Item1;
+          var y = pair.Item2;
+
+          bool wasNonRight = x.ActionDecl.moverCheckStatus.checkedRight &&
+                            !MoverCheck.RightPassed(x);
+
+          bool wasNonLeft = y.ActionDecl.moverCheckStatus.checkedLeft &&
+                            !MoverCheck.LeftPassed(y);
+
+          x.ActionDecl.moverCheckStatus.checkedRight = true;
+          y.ActionDecl.moverCheckStatus.checkedLeft = true;
+
+          bool isNonRight = !MoverCheck.RightPassed(x);
+          bool isNonLeft = !MoverCheck.LeftPassed(y);
+
+          if (!wasNonRight && isNonRight)
+          {
+            Console.WriteLine($"[MoverInference] {x.ActionDecl.Name} is non-right");
+            context.PendingNonMovers.Push((x, NonMoverKind.NonRight));
+          }
+
+          if (!wasNonLeft && isNonLeft)
+          {
+            Console.WriteLine($"[MoverInference] {y.ActionDecl.Name} is non-left");
+            context.PendingNonMovers.Push((y, NonMoverKind.NonLeft));
+          }
         }
       }
     }
@@ -509,6 +505,42 @@ namespace Microsoft.Boogie
                 ApplyLeftCheckResultAndRecord(context, action, true);
               }
             }
+          }
+        }
+      }
+
+      // check initial obligations for each region
+      foreach(var region in context.Regions)
+      {
+        var obligations = YieldRegionExtractor.AnalyzeRegion(region.Region);
+
+        foreach (var action in obligations.MustCheckRightActions)
+        {
+          if (!action.ActionDecl.moverCheckStatus.checkedRight)
+          {
+            var passed = await checkRightMover(action, civlTypeChecker, context);
+            if (!passed)
+            {
+              throw new Exception(
+                $"Mover inference obligation failed: action {action.ActionDecl.Name} was required to be right-mover but the check failed.");
+            }
+
+            ApplyRightCheckResultAndRecord(context, action, true);
+          }
+        }
+
+        foreach (var action in obligations.MustCheckLeftActions)
+        {
+          if (!action.ActionDecl.moverCheckStatus.checkedLeft)
+          {
+            var passed = await checkLeftMover(action, civlTypeChecker, context);
+            if (!passed)
+            {
+              throw new Exception(
+                $"Mover inference obligation failed: action {action.ActionDecl.Name} was required to be left-mover but the check failed.");
+            }
+
+            ApplyLeftCheckResultAndRecord(context, action, true);
           }
         }
       }
@@ -727,21 +759,7 @@ namespace Microsoft.Boogie
 
           UpdateContextFromCheckResults(currentChecks, output.ToString(), context);
 
-          if (Options.Trace)
-          {
-            foreach (var kv in context.PreviousChecksCache.Where(kv =>
-                      currentChecks.Contains(kv.Key)))
-            {
-              Console.WriteLine($"Caching result for pair ({kv.Key.Item1.ActionDecl.Name}, {kv.Key.Item2.ActionDecl.Name}): {kv.Value}");
-            }
-          }
-
-          if (Options.Trace)
-          {
-            Console.WriteLine(output.ToString());
-          }
-
-          return outcome == PipelineOutcome.VerificationCompleted && rightStats.ErrorCount == 0;
+          return (outcome == PipelineOutcome.VerificationCompleted || outcome == PipelineOutcome.Done) && rightStats.ErrorCount == 0;
         }
         finally
         {
@@ -850,19 +868,10 @@ namespace Microsoft.Boogie
 
         if (Options.Trace)
         {
-          foreach (var kv in context.PreviousChecksCache.Where(kv =>
-                    currentChecks.Contains(kv.Key)))
-          {
-            Console.WriteLine($"Caching result for pair ({kv.Key.Item1.ActionDecl.Name}, {kv.Key.Item2.ActionDecl.Name}): {kv.Value}");
-          }
+          // Console.WriteLine(output.ToString());
         }
 
-        if (Options.Trace)
-        {
-          Console.WriteLine(output.ToString());
-        }
-
-        return outcome == PipelineOutcome.VerificationCompleted && leftStats.ErrorCount == 0;
+        return (outcome == PipelineOutcome.VerificationCompleted || outcome == PipelineOutcome.Done) && leftStats.ErrorCount == 0;
       }
       finally
       {
@@ -1035,9 +1044,7 @@ namespace Microsoft.Boogie
       }
 
       var context = BuildMoverInferenceContext(civlTypeChecker);
-
       await CheckMoverProcedureObligations(civlTypeChecker, context);
-
       while (true)
       {
         var batch = CollectPendingObligations(context);
@@ -1083,22 +1090,34 @@ namespace Microsoft.Boogie
 
         if (rightMover && leftMover)
         {
-          Console.WriteLine($"Action {action.ActionDecl.Name} is a both-mover");
+          if (Options.Trace)
+          {
+            Console.WriteLine($"Action {action.ActionDecl.Name} is a both-mover");
+          }
           action.ActionDecl.MoverType = MoverType.Both;
         }
         else if (rightMover)
         {
-          Console.WriteLine($"Action {action.ActionDecl.Name} is a right-mover");
+          if (Options.Trace)
+          {
+            Console.WriteLine($"Action {action.ActionDecl.Name} is a right-mover");
+          }
           action.ActionDecl.MoverType = MoverType.Right;
         }
         else if (leftMover)
         {
-          Console.WriteLine($"Action {action.ActionDecl.Name} is a left-mover");
+          if (Options.Trace) 
+          {
+            Console.WriteLine($"Action {action.ActionDecl.Name} is a left-mover");
+          }
           action.ActionDecl.MoverType = MoverType.Left;
         }
         else
         {
-          Console.WriteLine($"Action {action.ActionDecl.Name} is a non-mover");
+          if (Options.Trace)
+          {
+            Console.WriteLine($"Action {action.ActionDecl.Name} is a non-mover");
+          }
           action.ActionDecl.MoverType = MoverType.Atomic;
         }
       }
@@ -1309,6 +1328,7 @@ namespace Microsoft.Boogie
     ///  - TypeCheckingError if a type checking error occurred
     ///  - ResolvedAndTypeChecked if both resolution and type checking succeeded
     /// </summary>
+
     public PipelineOutcome ResolveAndTypecheck(Program program, string bplFileName,
       out CivlTypeChecker civlTypeChecker)
     {
@@ -1393,17 +1413,27 @@ namespace Microsoft.Boogie
           GetFileNameForConsole(Options, bplFileName));
         return PipelineOutcome.TypeCheckingError;
       }
-      
+
       if(Options.InferMoverTypes)
       {
-        InferMoverTypes(civlTypeChecker).GetAwaiter().GetResult();     
+        var start = DateTime.UtcNow;
+        InferMoverTypes(civlTypeChecker).GetAwaiter().GetResult();
+        var end = DateTime.UtcNow;
+        var elapsed = end - start;
+        Options.OutputWriter.WriteLine($"Time taken to infer mover types: {elapsed.TotalSeconds} seconds");   
       }
       else if (Options.InferMoverTypesBruteForce)
       {
+        var start = DateTime.UtcNow;
         InferMoverTypesBrute(civlTypeChecker).GetAwaiter().GetResult();
+        var end = DateTime.UtcNow;
+        var elapsed = end - start;
+        Options.OutputWriter.WriteLine($"Time taken to infer mover types: {elapsed.TotalSeconds} seconds");  
       }
-
-      YieldSufficiencyChecker.TypeCheck(civlTypeChecker);
+      if (!Options.TrustYieldSufficiency)
+      {
+        YieldSufficiencyChecker.TypeCheck(civlTypeChecker);
+      }
       if (Options.PrintFile != null && Options.PrintDesugarings)
       {
         // if PrintDesugaring option is engaged, print the file here, after resolution and type checking
