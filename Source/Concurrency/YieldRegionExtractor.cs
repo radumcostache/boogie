@@ -11,10 +11,9 @@ public class YieldRegionExtractor
   public sealed class CivlNode : IEquatable<CivlNode>
   {
     public Absy Original;
-    public int LoopId;   // -1 for non-cloned/original nodes
-    public int CopyId;   // 0 = original, 1 = cloned unroll copy
+    public string ContextKey;
 
-    public bool IsClone => LoopId >= 0 && CopyId > 0;
+    public bool IsClone => !string.IsNullOrEmpty(ContextKey);
 
     public override string ToString()
     {
@@ -22,7 +21,8 @@ public class YieldRegionExtractor
       {
         return Original.ToString();
       }
-      return $"{Original}_L{LoopId}_C{CopyId}";
+
+      return $"{Original}_CTX[{ContextKey}]";
     }
 
     public bool Equals(CivlNode other)
@@ -33,8 +33,7 @@ public class YieldRegionExtractor
       }
 
       return ReferenceEquals(Original, other.Original) &&
-             LoopId == other.LoopId &&
-             CopyId == other.CopyId;
+            ContextKey == other.ContextKey;
     }
 
     public override bool Equals(object obj)
@@ -47,27 +46,71 @@ public class YieldRegionExtractor
       unchecked
       {
         int h = RuntimeHelpers.GetHashCode(Original);
-        h = (h * 397) ^ LoopId;
-        h = (h * 397) ^ CopyId;
+        h = (h * 397) ^ (ContextKey?.GetHashCode() ?? 0);
         return h;
       }
     }
   }
 
+  private sealed class LoopContext
+  {
+    private readonly SortedDictionary<int, int> copies;
+
+    public static readonly LoopContext Empty = new LoopContext(new SortedDictionary<int, int>());
+
+    private LoopContext(SortedDictionary<int, int> copies)
+    {
+      this.copies = copies;
+      Key = string.Join(";", this.copies.Select(kv => $"{kv.Key}:{kv.Value}"));
+    }
+
+    public string Key { get; }
+
+    public int GetCopy(int loopId)
+    {
+      return copies.TryGetValue(loopId, out var copyId) ? copyId : 0;
+    }
+
+    public LoopContext WithCopy(int loopId, int copyId)
+    {
+      var next = new SortedDictionary<int, int>(copies);
+      if (copyId == 0)
+      {
+        next.Remove(loopId);
+      }
+      else
+      {
+        next[loopId] = copyId;
+      }
+      return new LoopContext(next);
+    }
+  }
+
+  private sealed class BaseEdge
+  {
+    public Absy Source;
+    public Absy Target;
+    public string Label;
+    public CallCmd CallCmd;
+    public BoogieAction Action;
+
+    // If non-null, this is a backedge into a non-yielding loop header.
+    public int? BackedgeLoopId;
+  }
   private sealed class NodeFactory
   {
-    private readonly Dictionary<(Absy, int, int), CivlNode> cache = new();
+    private readonly Dictionary<(Absy, string), CivlNode> cache = new();
 
-    public CivlNode Get(Absy absy, int loopId = -1, int copyId = 0)
+    public CivlNode Get(Absy absy, LoopContext context)
     {
-      var key = (absy, loopId, copyId);
+      var ctx = context?.Key ?? "";
+      var key = (absy, ctx);
       if (!cache.TryGetValue(key, out var node))
       {
         node = new CivlNode
         {
           Original = absy,
-          LoopId = loopId,
-          CopyId = copyId
+          ContextKey = ctx
         };
         cache[key] = node;
       }
@@ -466,146 +509,175 @@ public class YieldRegionExtractor
     return loopsByHeader.Values.ToList();
   }
 
-  private static Dictionary<Block, LoopInfo> BuildLoopMembership(List<LoopInfo> loops)
-  {
-    var membership = new Dictionary<Block, LoopInfo>();
-    foreach (var loop in loops.OrderBy(l => l.Blocks.Count))
-    {
-      foreach (var block in loop.Blocks)
-      {
-        // Prefer innermost/smaller loop if overlapping loops exist.
-        if (!membership.ContainsKey(block))
-        {
-          membership[block] = loop;
-        }
-      }
-    }
-    return membership;
-  }
-
   private static bool IsBackEdgeOfLoop(LoopInfo loop, Block source, Block target)
   {
     return loop != null && loop.BackEdges.Contains((source, target));
   }
 
-  private static IEnumerable<int> CopiesForBlock(Block block, Dictionary<Block, LoopInfo> membership)
+  private static Dictionary<(Block Source, Block Target), LoopInfo> BuildBackedgeMap(List<LoopInfo> loops)
   {
-    yield return 0;
-    if (membership.ContainsKey(block))
+    var result = new Dictionary<(Block Source, Block Target), LoopInfo>();
+    foreach (var loop in loops)
     {
-      yield return 1;
+      foreach (var backedge in loop.BackEdges)
+      {
+        result[backedge] = loop;
+      }
     }
+    return result;
   }
 
-  private static CivlNode MapNode(
-    NodeFactory factory,
-    Absy absy,
-    LoopInfo loop,
-    int copyId)
+  private static Dictionary<Absy, Block> BuildOwnerBlockMap(Implementation impl)
   {
-    if (loop == null || copyId == 0)
+    var result = new Dictionary<Absy, Block>();
+
+    foreach (var block in impl.Blocks)
     {
-      return factory.Get(absy);
+      result[block] = block;
+      foreach (var cmd in block.Cmds)
+      {
+        result[cmd] = block;
+      }
+      result[block.TransferCmd] = block;
     }
-    return factory.Get(absy, loop.LoopId, copyId);
+
+    return result;
   }
 
-  private static int AddParCallCmdEdges(
-    CivlGraph graph,
+  private static void AddBaseEdge(
+    List<BaseEdge> edges,
+    Absy source,
+    Absy target,
+    string label,
+    CallCmd callCmd,
+    BoogieAction action,
+    int? backedgeLoopId = null)
+  {
+    edges.Add(new BaseEdge
+    {
+      Source = source,
+      Target = target,
+      Label = label,
+      CallCmd = callCmd,
+      Action = action,
+      BackedgeLoopId = backedgeLoopId
+    });
+  }
+
+  private static IEnumerable<CivlEdge> YieldEdges(CivlGraph graph) { return graph.Edges.Where(IsYield); }
+  private static void AddParCallCmdBaseEdges(
+    List<BaseEdge> edges,
     CivlTypeChecker civlTypeChecker,
     ParCallCmd parCallCmd,
-    CivlNode parCallNode,
-    CivlNode next,
-    int currLayerNum,
-    int nextEdgeId,
-    NodeFactory factory,
-    LoopInfo loop,
-    int copyId)
+    Absy next,
+    int currLayerNum)
   {
     if (parCallCmd.CallCmds.Count == 0)
     {
-      return nextEdgeId;
+      return;
     }
 
-    AddEdge(graph, new CivlEdge
-    {
-      Id = nextEdgeId++,
-      Source = parCallNode,
-      Target = MapNode(factory, parCallCmd.CallCmds[0], loop, copyId),
-      Label = P,
-      CallCmd = null,
-      Action = null
-    });
+    AddBaseEdge(edges, parCallCmd, parCallCmd.CallCmds[0], P, null, null);
 
     for (int i = 0; i < parCallCmd.CallCmds.Count; i++)
     {
       var callCmd = parCallCmd.CallCmds[i];
       var target = i + 1 < parCallCmd.CallCmds.Count
-        ? MapNode(factory, parCallCmd.CallCmds[i + 1], loop, copyId)
+        ? (Absy)parCallCmd.CallCmds[i + 1]
         : next;
 
       var (label, action) = CallCmdInfo(civlTypeChecker, callCmd, currLayerNum);
+      AddBaseEdge(edges, callCmd, target, label, callCmd, action);
+    }
+  }
 
-      AddEdge(graph, new CivlEdge
+  private static List<BaseEdge> BuildBaseEdges(
+    CivlTypeChecker civlTypeChecker,
+    YieldProcedureDecl yieldingProc,
+    Implementation impl,
+    int currLayerNum,
+    List<LoopInfo> loops)
+  {
+    var edges = new List<BaseEdge>();
+    var backedgeMap = BuildBackedgeMap(loops);
+
+    foreach (Block block in impl.Blocks)
+    {
+      Absy blockEntry = block.Cmds.Count == 0 ? (Absy)block.TransferCmd : block.Cmds[0];
+      var entryLabel = yieldingProc.IsYieldingLoopHeader(block, currLayerNum) ? Y : P;
+      AddBaseEdge(edges, block, blockEntry, entryLabel, null, null);
+
+      for (int i = 0; i < block.Cmds.Count; i++)
       {
-        Id = nextEdgeId++,
-        Source = MapNode(factory, callCmd, loop, copyId),
-        Target = target,
-        Label = label,
-        CallCmd = callCmd,
-        Action = action
-      });
+        Cmd cmd = block.Cmds[i];
+        Absy next = (i + 1 == block.Cmds.Count) ? (Absy)block.TransferCmd : block.Cmds[i + 1];
+
+        if (cmd is CallCmd callCmd)
+        {
+          var (label, action) = CallCmdInfo(civlTypeChecker, callCmd, currLayerNum);
+          AddBaseEdge(edges, cmd, next, label, callCmd, action);
+        }
+        else if (cmd is ParCallCmd parCallCmd)
+        {
+          AddParCallCmdBaseEdges(edges, civlTypeChecker, parCallCmd, next, currLayerNum);
+        }
+        else
+        {
+          AddBaseEdge(edges, cmd, next, P, null, null);
+        }
+      }
+
+      if (block.TransferCmd is GotoCmd gotoCmd)
+      {
+        foreach (Block successor in gotoCmd.LabelTargets)
+        {
+          int? backedgeLoopId = null;
+          if (backedgeMap.TryGetValue((block, successor), out var loop))
+          {
+            backedgeLoopId = loop.LoopId;
+          }
+
+          AddBaseEdge(edges, block.TransferCmd, successor, P, null, null, backedgeLoopId);
+        }
+      }
     }
 
-    return nextEdgeId;
+    return edges;
   }
 
-  private static CivlNode SuccessorBlockNodeForEdge(
-    NodeFactory factory,
-    Dictionary<Block, LoopInfo> membership,
-    Block sourceBlock,
-    int sourceCopyId,
-    Block targetBlock)
+  private static Dictionary<Absy, List<BaseEdge>> BuildBaseOutEdges(List<BaseEdge> baseEdges)
   {
-    membership.TryGetValue(sourceBlock, out var sourceLoop);
-    membership.TryGetValue(targetBlock, out var targetLoop);
-
-    // Original copy of a loop: redirect loop backedge into the clone
-    if (sourceLoop != null && sourceCopyId == 0 &&
-        ReferenceEquals(sourceLoop, targetLoop) &&
-        IsBackEdgeOfLoop(sourceLoop, sourceBlock, targetBlock))
+    var result = new Dictionary<Absy, List<BaseEdge>>();
+    foreach (var edge in baseEdges)
     {
-      return factory.Get(targetBlock, sourceLoop.LoopId, 1);
+      if (!result.TryGetValue(edge.Source, out var list))
+      {
+        list = new List<BaseEdge>();
+        result[edge.Source] = list;
+      }
+      list.Add(edge);
     }
-
-    // Cloned copy of a loop: remain in the clone for intra-loop edges, except drop the backedge
-    if (sourceLoop != null && sourceCopyId == 1 &&
-        ReferenceEquals(sourceLoop, targetLoop))
-    {
-      return factory.Get(targetBlock, sourceLoop.LoopId, 1);
-    }
-
-    // Otherwise return the original target
-    return factory.Get(targetBlock);
+    return result;
   }
 
-  private static IEnumerable<CivlEdge> YieldEdges(CivlGraph graph)
+  private static LoopContext TransitionContext(LoopContext context, BaseEdge edge)
   {
-    return graph.Edges.Where(IsYield);
-  }
-
-  public static string PrintGraph(CivlGraph graph)
-  {
-    var sb = new System.Text.StringBuilder();
-    sb.AppendLine("Graph:");
-    foreach (var edge in graph.Edges.OrderBy(e => e.Id))
+    if (!edge.BackedgeLoopId.HasValue)
     {
-      var actionName = edge.Action?.ActionDecl?.Name ?? "-";
-      sb.AppendLine($"{edge.Id}: {edge.Source} --{CurrentLabel(edge)}--> {edge.Target}  action={actionName}");
+      return context;
     }
-    sb.AppendLine($"Initial: {graph.InitialState}");
-    sb.AppendLine($"Finals: {string.Join(", ", graph.FinalStates)}");
-    return sb.ToString();
+
+    var loopId = edge.BackedgeLoopId.Value;
+    var currentCopy = context.GetCopy(loopId);
+
+    if (currentCopy == 0)
+    {
+      // First time we traverse the non-yielding backedge: enter the cloned copy.
+      return context.WithCopy(loopId, 1);
+    }
+
+    // Already in cloned copy: this backedge must be dropped.
+    return null;
   }
 
   public static CivlGraph BuildGraph(
@@ -618,123 +690,75 @@ public class YieldRegionExtractor
     var factory = new NodeFactory();
 
     var loops = DiscoverNonYieldingLoops(yieldingProc, impl, currLayerNum);
-    var membership = BuildLoopMembership(loops);
+    var baseEdges = BuildBaseEdges(civlTypeChecker, yieldingProc, impl, currLayerNum, loops);
+    var baseOutEdges = BuildBaseOutEdges(baseEdges);
+    var ownerBlock = BuildOwnerBlockMap(impl);
 
-    graph.InitialState = factory.Get(impl.Blocks[0]);
+    var initialContext = LoopContext.Empty;
+    graph.InitialState = factory.Get(impl.Blocks[0], initialContext);
 
     int nextEdgeId = 0;
 
-    foreach (Block block in impl.Blocks)
+    var seenStates = new HashSet<(Absy, string)>();
+    var worklist = new Queue<(Absy absy, LoopContext context)>();
+    worklist.Enqueue((impl.Blocks[0], initialContext));
+    seenStates.Add((impl.Blocks[0], initialContext.Key));
+
+    while (worklist.Count > 0)
     {
-      membership.TryGetValue(block, out var loop);
+      var (absy, context) = worklist.Dequeue();
+      var sourceNode = factory.Get(absy, context);
 
-      foreach (int copyId in CopiesForBlock(block, membership))
+      if (!baseOutEdges.TryGetValue(absy, out var outgoing))
       {
-        var blockNode = MapNode(factory, block, loop, copyId);
+        // No outgoing base edges. If this is a return, mark final.
+        if (absy is ReturnCmd)
+        {
+          graph.FinalStates.Add(sourceNode);
+        }
+        continue;
+      }
 
-        Absy blockEntryAbsy = block.Cmds.Count == 0 ? (Absy)block.TransferCmd : block.Cmds[0];
-        var blockEntryNode = MapNode(factory, blockEntryAbsy, loop, copyId);
+      foreach (var baseEdge in outgoing)
+      {
+        var nextContext = TransitionContext(context, baseEdge);
+        if (nextContext == null)
+        {
+          // Dropped cloned backedge
+          continue;
+        }
 
-        var entryLabel = yieldingProc.IsYieldingLoopHeader(block, currLayerNum) ? Y : P;
+        var targetNode = factory.Get(baseEdge.Target, nextContext);
+
         AddEdge(graph, new CivlEdge
         {
           Id = nextEdgeId++,
-          Source = blockNode,
-          Target = blockEntryNode,
-          Label = entryLabel,
-          CallCmd = null,
-          Action = null
+          Source = sourceNode,
+          Target = targetNode,
+          Label = baseEdge.Label,
+          CallCmd = baseEdge.CallCmd,
+          Action = baseEdge.Action
         });
 
-        for (int i = 0; i < block.Cmds.Count; i++)
+        var stateKey = (baseEdge.Target, nextContext.Key);
+        if (seenStates.Add(stateKey))
         {
-          var cmd = block.Cmds[i];
-          var cmdNode = MapNode(factory, cmd, loop, copyId);
-          CivlNode nextNode;
-
-          if (i + 1 == block.Cmds.Count)
-          {
-            nextNode = MapNode(factory, block.TransferCmd, loop, copyId);
-          }
-          else
-          {
-            nextNode = MapNode(factory, block.Cmds[i + 1], loop, copyId);
-          }
-
-          if (cmd is CallCmd callCmd)
-          {
-            var (label, action) = CallCmdInfo(civlTypeChecker, callCmd, currLayerNum);
-            AddEdge(graph, new CivlEdge
-            {
-              Id = nextEdgeId++,
-              Source = cmdNode,
-              Target = nextNode,
-              Label = label,
-              CallCmd = callCmd,
-              Action = action
-            });
-          }
-          else if (cmd is ParCallCmd parCallCmd)
-          {
-            nextEdgeId = AddParCallCmdEdges(
-              graph,
-              civlTypeChecker,
-              parCallCmd,
-              cmdNode,
-              nextNode,
-              currLayerNum,
-              nextEdgeId,
-              factory,
-              loop,
-              copyId);
-          }
-          else
-          {
-            AddEdge(graph, new CivlEdge
-            {
-              Id = nextEdgeId++,
-              Source = cmdNode,
-              Target = nextNode,
-              Label = P,
-              CallCmd = null,
-              Action = null
-            });
-          }
+          worklist.Enqueue((baseEdge.Target, nextContext));
         }
+      }
+    }
 
-        if (block.TransferCmd is GotoCmd gotoCmd)
-        {
-          var transferNode = MapNode(factory, block.TransferCmd, loop, copyId);
-          foreach (Block successor in gotoCmd.LabelTargets)
-          {
-            // Drop cloned backedges to make the clone acyclic
-            if (loop != null && copyId == 1 && IsBackEdgeOfLoop(loop, block, successor))
-            {
-              continue;
-            }
-
-            var targetNode = SuccessorBlockNodeForEdge(factory, membership, block, copyId, successor);
-
-            AddEdge(graph, new CivlEdge
-            {
-              Id = nextEdgeId++,
-              Source = transferNode,
-              Target = targetNode,
-              Label = P,
-              CallCmd = null,
-              Action = null
-            });
-          }
-        }
-        else if (block.TransferCmd is ReturnCmd)
-        {
-          graph.FinalStates.Add(MapNode(factory, block.TransferCmd, loop, copyId));
-        }
+    foreach (var node in graph.Nodes)
+    {
+      if (node.Original is ReturnCmd)
+      {
+        graph.FinalStates.Add(node);
       }
     }
 
     return graph;
   }
+
   private static List<CivlNode> ComputeTopologicalNodes(YieldRegion region)
   {
     var indegree = region.Nodes.ToDictionary(node => node, _ => 0);

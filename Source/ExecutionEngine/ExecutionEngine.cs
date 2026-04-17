@@ -382,7 +382,16 @@ namespace Microsoft.Boogie
         foreach (int layerNum in civlTypeChecker.AllRefinementLayers.Where(l => l <= yieldingProc.Layer))
         {
           var graph = YieldRegionExtractor.BuildGraph(civlTypeChecker, yieldingProc, impl, layerNum);
-          var regions = YieldRegionExtractor.ExtractRegions(graph);
+          List<YieldRegionExtractor.YieldRegion> regions;
+
+          try {
+            regions = YieldRegionExtractor.ExtractRegions(graph);
+          }
+          catch (Exception e)
+          {
+            Console.WriteLine($"Error extracting regions for {impl.Name} at layer {layerNum}: {e}");
+            continue;
+          }
 
           foreach (var region in regions)
           {
