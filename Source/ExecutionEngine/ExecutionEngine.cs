@@ -701,7 +701,7 @@ namespace Microsoft.Boogie
 
         if (Options.Trace)
         {
-          Options.OutputWriter.WriteLine($"[MoverInference] Obligated right check for {action.ActionDecl.Name}: true");
+          Console.Out.WriteLine($"[MoverInference] Obligated right check for {action.ActionDecl.Name}: true");
         }
       }
 
@@ -711,7 +711,7 @@ namespace Microsoft.Boogie
 
         if (Options.Trace)
         {
-          Options.OutputWriter.WriteLine($"[MoverInference] Obligated left check for {action.ActionDecl.Name}: true");
+          Console.Out.WriteLine($"[MoverInference] Obligated left check for {action.ActionDecl.Name}: true");
         }
       }
 
@@ -726,7 +726,9 @@ namespace Microsoft.Boogie
         List<Declaration> rdecls = new List<Declaration>();
         Program program = civlTypeChecker.linearTypeChecker.program;
         var originalDecls = GetOriginalCivlDecls(program);
-
+        var declarationsToRestore = new HashSet<Declaration>();
+        declarationsToRestore.UnionWith(program.TopLevelDeclarations);
+        
         civlTypeChecker.AtomicActions.ForEach(x =>
         {
             rdecls.AddRange(new Declaration[] { x.Impl, x.Impl.Proc, x.InputOutputRelation });
@@ -760,8 +762,13 @@ namespace Microsoft.Boogie
 
           UnusedVarEliminator.Eliminate(program);
           BlockCoalescer.CoalesceBlocks(program);
+          
           Inline(program);
-
+        { int oldPrintUnstructured = Options.PrintUnstructured;
+        Options.PrintUnstructured = 1;
+        PrintBplFile("AfterInferAndVerify.bpl", program, false, false,
+          Options.PrettyPrint);
+        Options.PrintUnstructured = oldPrintUnstructured; }
           TextWriter output = new StringWriter();
           var rightStats = new PipelineStatistics();
           var outcome = await InferAndVerify(output, program, rightStats, null);
@@ -772,8 +779,8 @@ namespace Microsoft.Boogie
         }
         finally
         {
-          program.RemoveTopLevelDeclarations(x => rdecls.Contains(x));
-          RestoreDeclarations(program, originalDecls);
+          program.RemoveTopLevelDeclarations(x => true);
+          RestoreDeclarations(program, declarationsToRestore);
         }
     }
     async Task<bool> checkLeftMover(
@@ -783,6 +790,8 @@ namespace Microsoft.Boogie
     {
       var program = civlTypeChecker.linearTypeChecker.program;
       var originalDecls = GetOriginalCivlDecls(program);
+      var declarationsToRestore = new HashSet<Declaration>();
+      declarationsToRestore.UnionWith(program.TopLevelDeclarations);
       
       List<Declaration> ldecls = new List<Declaration>();
 
@@ -797,24 +806,25 @@ namespace Microsoft.Boogie
       });
 
       List<Tuple<Action, Action>> currentChecks = new List<Tuple<Action, Action>>();
-      MoverCheck lmoverChecking = new MoverCheck(civlTypeChecker, ldecls, context.PreviousChecksCache);      if (!action.ActionDecl.HasPreconditions) {
-      foreach (var other in civlTypeChecker.MoverActions.Where(a => a.LayerRange.OverlapsWith(action.LayerRange)))
-        {
-            bool? previousCheckResult = lmoverChecking.GetPreviousCheck(other, action);
-            if (previousCheckResult.HasValue) {
-              if (previousCheckResult.Value == false) {
-                return false;
+      MoverCheck lmoverChecking = new MoverCheck(civlTypeChecker, ldecls, context.PreviousChecksCache);
+      if (!action.ActionDecl.HasPreconditions) {
+        foreach (var other in civlTypeChecker.MoverActions.Where(a => a.LayerRange.OverlapsWith(action.LayerRange)))
+          {
+              bool? previousCheckResult = lmoverChecking.GetPreviousCheck(other, action);
+              if (previousCheckResult.HasValue) {
+                if (previousCheckResult.Value == false) {
+                  return false;
+                }
+                else {
+                  lmoverChecking.CreateFailurePreservationChecker(other, action);
+                }
               }
               else {
-                lmoverChecking.CreateFailurePreservationChecker(other, action);
+                lmoverChecking.CreateLeftMoverCheckers(other, action);
+                currentChecks.Add(Tuple.Create(other, action));
               }
-            }
-            else {
-              lmoverChecking.CreateLeftMoverCheckers(other, action);
-              currentChecks.Add(Tuple.Create(other, action));
-            }
-        }
-      lmoverChecking.CreateNonblockingChecker(action);
+          }
+        lmoverChecking.CreateNonblockingChecker(action);
       }
       else
       {
@@ -858,13 +868,21 @@ namespace Microsoft.Boogie
 
         UnusedVarEliminator.Eliminate(program);
         BlockCoalescer.CoalesceBlocks(program);
-        Inline(program);
 
+        try{
+          Inline(program);
+
+        }
+        catch (Exception e)
+        {
+          Console.WriteLine($"Error inlining for left mover check of {action.ActionDecl.Name}: {e}");
+          throw;
+        }
         // TODO: Remove this piece of code once I figure out what is not working in the GC.bpl
-        if (action.ActionDecl.Name == "AtomicSweepNext")
+        // if (action.ActionDecl.Name == "AtomicInsertIntoSetIfWhiteByCollector")
         { int oldPrintUnstructured = Options.PrintUnstructured;
         Options.PrintUnstructured = 1;
-        PrintBplFile("AtomicSweepNext.bpl", program, false, false,
+        PrintBplFile("BeforeInferAndVerify.bpl", program, false, false,
           Options.PrettyPrint);
         Options.PrintUnstructured = oldPrintUnstructured; }
 
@@ -872,20 +890,28 @@ namespace Microsoft.Boogie
         var output = new StringWriter();
         var leftStats = new PipelineStatistics();
         var outcome = await InferAndVerify(output , program, leftStats, null);
+        
+        { int oldPrintUnstructured = Options.PrintUnstructured;
+        Options.PrintUnstructured = 1;
+        PrintBplFile("AfterInferAndVerify.bpl", civlTypeChecker.program, false, false,
+          Options.PrettyPrint);
+        Options.PrintUnstructured = oldPrintUnstructured; }
 
         UpdateContextFromCheckResults(currentChecks, output.ToString(), context);
 
         if (Options.Trace)
         {
-          // Console.WriteLine(output.ToString());
+          Console.WriteLine(output.ToString());
         }
 
         return (outcome == PipelineOutcome.VerificationCompleted || outcome == PipelineOutcome.Done) && leftStats.ErrorCount == 0;
       }
       finally
       {
-        program.RemoveTopLevelDeclarations(x => ldecls.Contains(x));
-        RestoreDeclarations(program, originalDecls);
+        program.RemoveTopLevelDeclarations(x => true);
+        // program.RemoveTopLevelDeclarations(x => program.TempDecls.Contains(x));
+        // program.TempDecls.Clear();
+        RestoreDeclarations(program, declarationsToRestore);
       }
     }
     private Dictionary<Action, (bool, bool)> CollectObligations(CivlTypeChecker civlTypeChecker)
@@ -976,7 +1002,7 @@ namespace Microsoft.Boogie
 
               if (Options.Trace)
               {
-                Options.OutputWriter.WriteLine(
+                Console.Out.WriteLine(
                   $"[MoverInference] Region fallback right check for {action.ActionDecl.Name}: {passed}");
               }
 
@@ -1016,7 +1042,7 @@ namespace Microsoft.Boogie
 
               if (Options.Trace)
               {
-                Options.OutputWriter.WriteLine(
+                Console.Out.WriteLine(
                   $"[MoverInference] Region fallback left check for {action.ActionDecl.Name}: {passed}");
               }
 

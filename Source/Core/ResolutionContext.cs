@@ -45,6 +45,11 @@ namespace Microsoft.Boogie
       set { errors = value; }
     }
 
+    public IErrorSink ErrorSink
+    {
+      get { return errorSink; }
+    }
+
     public void Error(Absy subject, string msg, params object[] args)
     {
       Contract.Requires(args != null);

@@ -258,6 +258,8 @@ namespace Microsoft.Boogie
     {
       public void Error(IToken tok, string msg)
       {
+        //TODO: DELETE THIS
+        Console.Out.WriteLine("DummyErrorSink: {0} at {1}", msg, tok);
         // FIXME
         // noop.
         // This is required because during the resolution, some resolution errors happen
@@ -276,6 +278,11 @@ namespace Microsoft.Boogie
       }
       impl.Proc = null; // to force Resolve() redo the operation
       impl.Resolve(rc);
+      // TODO: Check the resolution errors 
+      if (rc.ErrorCount != 0)
+      {
+        Console.Out.WriteLine("RC Errors: {0}", rc.ErrorSink);
+      }
       Debug.Assert(rc.ErrorCount == 0);
 
       TypecheckingContext tc = new TypecheckingContext(new DummyErrorSink(), options);
