@@ -275,8 +275,6 @@ namespace Microsoft.Boogie
         var overall = comm && gate;
 
         context.PreviousChecksCache[pair] = overall;
-        // Console.WriteLine(
-        //   $"Caching result for pair ({pair.Item1.ActionDecl.Name}, {pair.Item2.ActionDecl.Name}): {overall}");
 
         if (!overall)
         {
@@ -612,6 +610,7 @@ namespace Microsoft.Boogie
       public HashSet<Action> MustCheckRight = new();
       public HashSet<Action> MustCheckLeft = new();
     }
+
     private ObligationBatch CollectPendingObligations(MoverInferenceContext context)
     {
       var batch = new ObligationBatch();
@@ -619,7 +618,11 @@ namespace Microsoft.Boogie
 
       while (context.PendingNonMovers.Count > 0)
       {
-        var (sourceAction, _) = context.PendingNonMovers.Pop();
+        var (sourceAction, type) = context.PendingNonMovers.Pop();
+        if (Options.Trace)
+        {
+          Options.OutputWriter.WriteLine($"[MoverInference] Processing pending {type} {sourceAction.ActionDecl.Name}");
+        }
 
         if (!context.RegionsByAction.TryGetValue(sourceAction, out var regions))
         {
@@ -701,7 +704,7 @@ namespace Microsoft.Boogie
 
         if (Options.Trace)
         {
-          Console.Out.WriteLine($"[MoverInference] Obligated right check for {action.ActionDecl.Name}: true");
+          Options.OutputWriter.WriteLine($"[MoverInference] Obligated right check for {action.ActionDecl.Name}: true");
         }
       }
 
@@ -723,22 +726,23 @@ namespace Microsoft.Boogie
       CivlTypeChecker civlTypeChecker,
       MoverInferenceContext context)
     {
+        if (Options.Trace)
+        {
+          Options.OutputWriter.WriteLine($"[MoverInference] Checking right mover for {action.ActionDecl.Name}");
+        }
         List<Declaration> rdecls = new List<Declaration>();
         Program program = civlTypeChecker.linearTypeChecker.program;
         var originalDecls = GetOriginalCivlDecls(program);
         var declarationsToRestore = new HashSet<Declaration>();
         declarationsToRestore.UnionWith(program.TopLevelDeclarations);
         
-        civlTypeChecker.AtomicActions.ForEach(x =>
+        civlTypeChecker.originalImpls.ForEach(x =>
         {
-            rdecls.AddRange(new Declaration[] { x.Impl, x.Impl.Proc, x.InputOutputRelation });
-            if (x.ImplWithChoice != null)
-            {
-              rdecls.AddRange(new Declaration[]
-                  { x.ImplWithChoice, x.ImplWithChoice.Proc, x.InputOutputRelationWithChoice });
-            }
+            rdecls.AddRange(new Declaration[] { x });
+
         });
 
+        
         MoverCheck moverChecking = new MoverCheck(civlTypeChecker, rdecls, context.PreviousChecksCache);        List<Tuple<Action, Action>> currentChecks = new List<Tuple<Action, Action>>();
         foreach (var other in civlTypeChecker.MoverActions.Where(a => a.LayerRange.OverlapsWith(action.LayerRange)))
         {
@@ -759,28 +763,34 @@ namespace Microsoft.Boogie
         {
           program.AddTopLevelDeclarations(rdecls);
           new LinearTypeChecker.LinearTypeEraser().VisitProgram(program);
+        // { int oldPrintUnstructured = Options.PrintUnstructured;
+        // Options.PrintUnstructured = 1;
+        // PrintBplFile("BeforeInferAndVerify.bpl", program, false, true,
+        //   Options.PrettyPrint);
+        // Options.PrintUnstructured = oldPrintUnstructured; }
 
           UnusedVarEliminator.Eliminate(program);
           BlockCoalescer.CoalesceBlocks(program);
           
           Inline(program);
-        { int oldPrintUnstructured = Options.PrintUnstructured;
-        Options.PrintUnstructured = 1;
-        PrintBplFile("AfterInferAndVerify.bpl", program, false, false,
-          Options.PrettyPrint);
-        Options.PrintUnstructured = oldPrintUnstructured; }
+
+
+
           TextWriter output = new StringWriter();
           var rightStats = new PipelineStatistics();
           var outcome = await InferAndVerify(output, program, rightStats, null);
 
           UpdateContextFromCheckResults(currentChecks, output.ToString(), context);
-
+          // if (Options.Trace)
+          // {
+          //   Console.Out.WriteLine(output.ToString());
+          // }
           return (outcome == PipelineOutcome.VerificationCompleted || outcome == PipelineOutcome.Done) && rightStats.ErrorCount == 0;
         }
         finally
         {
-          program.RemoveTopLevelDeclarations(x => true);
-          RestoreDeclarations(program, declarationsToRestore);
+          program.RemoveTopLevelDeclarations(x => rdecls.Contains(x));
+          RestoreDeclarations(program, originalDecls);
         }
     }
     async Task<bool> checkLeftMover(
@@ -788,6 +798,10 @@ namespace Microsoft.Boogie
       CivlTypeChecker civlTypeChecker,
       MoverInferenceContext context)
     {
+      if (Options.Trace)
+      {
+        Options.OutputWriter.WriteLine($"[MoverInference] Checking left mover for {action.ActionDecl.Name}");
+      }
       var program = civlTypeChecker.linearTypeChecker.program;
       var originalDecls = GetOriginalCivlDecls(program);
       var declarationsToRestore = new HashSet<Declaration>();
@@ -795,14 +809,10 @@ namespace Microsoft.Boogie
       
       List<Declaration> ldecls = new List<Declaration>();
 
-      civlTypeChecker.AtomicActions.ForEach(x =>
+      civlTypeChecker.originalImpls.ForEach(x =>
       {
-          ldecls.AddRange(new Declaration[] { x.Impl, x.Impl.Proc, x.InputOutputRelation });
-          if (x.ImplWithChoice != null)
-          {
-            ldecls.AddRange(new Declaration[]
-                { x.ImplWithChoice, x.ImplWithChoice.Proc, x.InputOutputRelationWithChoice });
-          }
+          ldecls.AddRange(new Declaration[] { x });
+
       });
 
       List<Tuple<Action, Action>> currentChecks = new List<Tuple<Action, Action>>();
@@ -824,7 +834,7 @@ namespace Microsoft.Boogie
                 currentChecks.Add(Tuple.Create(other, action));
               }
           }
-        lmoverChecking.CreateNonblockingChecker(action);
+        ldecls.AddRange(action.NonBlockingChecker);
       }
       else
       {
@@ -850,14 +860,7 @@ namespace Microsoft.Boogie
           lmoverChecking.CreateFailurePreservationChecker(other, action, moverCheckContext1);
         }
         
-        var subst = Substituter.SubstitutionFromDictionary(
-            action.ActionDecl.InParams.Zip(action.Impl.InParams.Select(x => (Expr)Expr.Ident(x))).ToDictionary(x => x.Item1, x => x.Item2));
-        var moverCheckContext = new MoverCheck.MoverCheckContext
-        {
-          layer = layer,
-          extraAssumptions = action.Preconditions(layer, subst).Select(assertCmd => assertCmd.Expr),
-        };
-        lmoverChecking.CreateNonblockingChecker(action, moverCheckContext);
+        ldecls.AddRange(action.NonBlockingChecker);
       }
 
       RemoveDeclarations(program, originalDecls);
@@ -868,24 +871,13 @@ namespace Microsoft.Boogie
 
         UnusedVarEliminator.Eliminate(program);
         BlockCoalescer.CoalesceBlocks(program);
+        Inline(program);
 
-        try{
-          Inline(program);
-
-        }
-        catch (Exception e)
-        {
-          Console.WriteLine($"Error inlining for left mover check of {action.ActionDecl.Name}: {e}");
-          throw;
-        }
-        // TODO: Remove this piece of code once I figure out what is not working in the GC.bpl
-        // if (action.ActionDecl.Name == "AtomicInsertIntoSetIfWhiteByCollector")
         { int oldPrintUnstructured = Options.PrintUnstructured;
         Options.PrintUnstructured = 1;
         PrintBplFile("BeforeInferAndVerify.bpl", program, false, false,
           Options.PrettyPrint);
         Options.PrintUnstructured = oldPrintUnstructured; }
-
 
         var output = new StringWriter();
         var leftStats = new PipelineStatistics();
@@ -908,10 +900,8 @@ namespace Microsoft.Boogie
       }
       finally
       {
-        program.RemoveTopLevelDeclarations(x => true);
-        // program.RemoveTopLevelDeclarations(x => program.TempDecls.Contains(x));
-        // program.TempDecls.Clear();
-        RestoreDeclarations(program, declarationsToRestore);
+        program.RemoveTopLevelDeclarations(x => ldecls.Contains(x));
+        RestoreDeclarations(program, originalDecls);
       }
     }
     private Dictionary<Action, (bool, bool)> CollectObligations(CivlTypeChecker civlTypeChecker)
@@ -958,6 +948,11 @@ namespace Microsoft.Boogie
       var region = regionRecord.Region;
       var leftReachable = new HashSet<YieldRegionExtractor.CivlNode>();
 
+      if (Options.Trace)
+      {
+        Options.OutputWriter.WriteLine($"[MoverInference] Running fallback on region {regionRecord.Id} of impl {regionRecord.Impl.Name} at layer {regionRecord.LayerNum}");
+      }
+
       foreach (var node in region.TopologicalNodes)
       {
         bool inLeftSuffix = leftReachable.Contains(node);
@@ -987,9 +982,8 @@ namespace Microsoft.Boogie
               continue;
             }
 
-            if (MoverCheck.LeftPassed(action) ||
-                MoverCheck.IsKnownNonRight(edge) ||
-                YieldRegionExtractor.IsCurrentlyAtomicEdge(edge))
+            if ((MoverCheck.LeftPassed(action) && !MoverCheck.RightPassed(action)) ||
+                MoverCheck.IsKnownNonRight(edge))
             {
               leftReachable.Add(edge.Target);
               continue;
@@ -1002,7 +996,7 @@ namespace Microsoft.Boogie
 
               if (Options.Trace)
               {
-                Console.Out.WriteLine(
+                Options.OutputWriter.WriteLine(
                   $"[MoverInference] Region fallback right check for {action.ActionDecl.Name}: {passed}");
               }
 
@@ -1022,12 +1016,7 @@ namespace Microsoft.Boogie
           else
           {
             // Left-reachable suffix: lazily try to keep everything left.
-
-            if (MoverCheck.LeftPassed(action) || YieldRegionExtractor.IsCurrentlyBothEdge(edge))
-            {
-              leftReachable.Add(edge.Target);
-              continue;
-            }
+            leftReachable.Add(edge.Target);
 
             if (MoverCheck.IsKnownNonLeft(edge) || YieldRegionExtractor.IsCurrentlyAtomicEdge(edge))
             {
@@ -1052,15 +1041,6 @@ namespace Microsoft.Boogie
                 return false;
               }
             }
-
-            if (MoverCheck.LeftPassed(action) || YieldRegionExtractor.IsCurrentlyBothEdge(edge))
-            {
-              leftReachable.Add(edge.Target);
-              continue;
-            }
-
-            // Checked left but still not left => region not fully typed yet.
-            return false;
           }
         }
       }
@@ -1439,6 +1419,11 @@ namespace Microsoft.Boogie
         Options.OutputWriter.WriteLine("Functions with :define attribute only supported with monomorphic encoding");
         return PipelineOutcome.FatalError;
       }
+      
+      if (Options.ExpandLambdas)
+      {
+        LambdaHelper.ExpandLambdas(Options, program);
+      }
 
       civlTypeChecker = new CivlTypeChecker(Options, program);
       civlTypeChecker.TypeCheck();
@@ -1447,6 +1432,49 @@ namespace Microsoft.Boogie
         Options.OutputWriter.WriteLine("{0} type checking errors detected in {1}", civlTypeChecker.checkingContext.ErrorCount,
           GetFileNameForConsole(Options, bplFileName));
         return PipelineOutcome.TypeCheckingError;
+      }
+
+      List<Declaration> decls = civlTypeChecker.originalImpls;
+      civlTypeChecker.AtomicActions.ForEach(x =>
+      {
+        decls.AddRange(new Declaration[] { x.Impl, x.Impl.Proc, x.InputOutputRelation });
+        if (x.ImplWithChoice != null)
+        {
+          decls.AddRange(new Declaration[]
+            { x.ImplWithChoice, x.ImplWithChoice.Proc, x.InputOutputRelationWithChoice });
+        }
+      });
+      
+      if (!Options.TrustRefinement)
+      {
+        YieldingProcChecker.AddRefinementCheckers(civlTypeChecker, civlTypeChecker.precomputedCheckers);
+      
+        if (!Options.TrustSequentialization)
+        {
+            Sequentialization.AddCheckers(civlTypeChecker, civlTypeChecker.precomputedCheckers);
+        }
+      }
+
+      // Desugaring of yielding procedures
+      if (!Options.TrustInvariants)
+      {
+        YieldingProcChecker.AddInvariantCheckers(civlTypeChecker, civlTypeChecker.precomputedCheckers);
+      }
+
+      // Precompute the nonblocking checkers for every action
+      List<Declaration> NonBlockingCheckers = new List<Declaration>();
+
+      MoverCheck moverChecking = new MoverCheck(civlTypeChecker, NonBlockingCheckers);
+      foreach (var action in civlTypeChecker.AtomicActions)
+      {
+        moverChecking.GenerateNonBlockingChecker(action);
+        action.NonBlockingChecker = new List<Declaration>(NonBlockingCheckers);
+        NonBlockingCheckers.Clear();
+      }
+
+      foreach (var action in civlTypeChecker.AtomicActions)
+      {
+        action.AddTriggerAssumes(civlTypeChecker.program, Options);
       }
 
       if(Options.InferMoverTypes)
@@ -1606,14 +1634,6 @@ namespace Microsoft.Boogie
         // Doing lambda expansion before abstract interpretation means that the abstract interpreter
         // never needs to see any lambda expressions.  (On the other hand, if it were useful for it
         // to see lambdas, then it would be better to more lambda expansion until after inference.)
-        if (Options.ExpandLambdas)
-        {
-          LambdaHelper.ExpandLambdas(Options, program);
-          if (Options.PrintFile != null && Options.PrintLambdaLifting)
-          {
-            PrintBplFile(Options.PrintFile, program, false, true, Options.PrettyPrint);
-          }
-        }
 
         if (Options.UseAbstractInterpretation)
         {

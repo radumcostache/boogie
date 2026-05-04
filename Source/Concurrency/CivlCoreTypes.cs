@@ -19,6 +19,7 @@ namespace Microsoft.Boogie
     public Implementation FirstImpl;
     public List<AssertCmd> SecondGate;
     public Implementation SecondImpl;
+    public List<Declaration> NonBlockingChecker;
     public Dictionary<Variable, Function> TriggerFunctions;
     
     public DatatypeTypeCtorDecl ChoiceDatatypeTypeCtorDecl;
@@ -88,6 +89,7 @@ namespace Microsoft.Boogie
     public bool IsConditionalLeftMover => IsLeftMover && ActionDecl.HasPreconditions;
 
     public bool IsUnconditionalLeftMover => IsLeftMover && !ActionDecl.HasPreconditions;
+    public bool IsConditional => !ActionDecl.HasPreconditions;
 
     public int PendingAsyncStartIndex => ActionDecl.OutParams.Count;
 

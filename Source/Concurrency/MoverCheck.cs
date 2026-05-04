@@ -65,9 +65,7 @@ namespace Microsoft.Boogie
         return edge.Label == "R" || edge.Label == "N";
       }
 
-      return LeftFailed(edge.Action) ||
-            edge.Action.ActionDecl.MoverType == MoverType.Right ||
-            edge.Action.ActionDecl.MoverType == MoverType.Atomic;
+      return LeftFailed(edge.Action);
     }
     public static bool IsKnownNonRight(YieldRegionExtractor.CivlEdge edge)
     {
@@ -76,9 +74,7 @@ namespace Microsoft.Boogie
         return edge.Label == "L" || edge.Label == "N";
       }
 
-      return RightFailed(edge.Action) ||
-            edge.Action.ActionDecl.MoverType == MoverType.Left ||
-            edge.Action.ActionDecl.MoverType == MoverType.Atomic;
+      return RightFailed(edge.Action);
     }
 
     public static void ApplyRightCheckResult(Action action, bool passed)
@@ -207,22 +203,8 @@ namespace Microsoft.Boogie
 
       foreach (var leftMover in civlTypeChecker.MoverActions.Where(a => a.IsLeftMover))
       {
-        if (leftMover.IsUnconditionalLeftMover)
-        {
-          moverChecking.CreateNonblockingChecker(leftMover);
-        }
-        else
-        {
-          var layer = leftMover.ActionDecl.LayerRange.UpperLayer;
-          var subst = Substituter.SubstitutionFromDictionary(
-              leftMover.ActionDecl.InParams.Zip(leftMover.Impl.InParams.Select(x => (Expr)Expr.Ident(x))).ToDictionary(x => x.Item1, x => x.Item2));
-          var moverCheckContext = new MoverCheckContext
-          {
-            layer = layer,
-            extraAssumptions = leftMover.Preconditions(layer, subst).Select(assertCmd => assertCmd.Expr),
-          };
-          moverChecking.CreateNonblockingChecker(leftMover, moverCheckContext);
-        }
+        
+        moverChecking.GenerateNonBlockingChecker(leftMover);
       }
     }
 
@@ -475,6 +457,33 @@ namespace Microsoft.Boogie
       ));
 
       AddChecker(checkerName, inputs, outputs, new List<Variable>(), requires, cmds);
+    }
+
+    public void GenerateNonBlockingChecker(Action action)
+    {
+      if (action.NonBlockingChecker != null)
+      {
+        Console.WriteLine("Using precomputedNonBlocking");
+        decls.AddRange(action.NonBlockingChecker);
+        return;
+      }
+
+      if (!action.IsConditional)
+      {
+        CreateNonblockingChecker(action);
+      }
+      else
+      {
+        var layer = action.ActionDecl.LayerRange.UpperLayer;
+        var subst = Substituter.SubstitutionFromDictionary(
+            action.ActionDecl.InParams.Zip(action.Impl.InParams.Select(x => (Expr)Expr.Ident(x))).ToDictionary(x => x.Item1, x => x.Item2));
+        var moverCheckContext = new MoverCheckContext
+        {
+          layer = layer,
+          extraAssumptions = action.Preconditions(layer, subst).Select(assertCmd => assertCmd.Expr),
+        };
+        CreateNonblockingChecker(action, moverCheckContext);
+      }
     }
 
     public void CreateNonblockingChecker(Action action) => CreateNonblockingChecker(action, null);

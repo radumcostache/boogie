@@ -12,7 +12,8 @@ namespace Microsoft.Boogie
     public LinearTypeChecker linearTypeChecker;
     public List<int> AllRefinementLayers;
     public ActionDecl SkipActionDecl;
-    
+    public List<Declaration> precomputedCheckers = new List<Declaration>();
+    public List<Declaration> originalImpls = new List<Declaration>();
     private Dictionary<ActionDecl, Action> actionDeclToAction;
     private List<Sequentialization> sequentializations;
     private Dictionary<Implementation, Dictionary<CtorType, Variable>> implToPendingAsyncCollectors;

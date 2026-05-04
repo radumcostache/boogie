@@ -26,14 +26,10 @@ namespace Microsoft.Boogie
       // Gate sufficiency checks
       Action.AddGateSufficiencyCheckers(civlTypeChecker, decls);
 
-      civlTypeChecker.AtomicActions.ForEach(x =>
+      civlTypeChecker.originalImpls.ForEach(x =>
       {
-        decls.AddRange(new Declaration[] { x.Impl, x.Impl.Proc, x.InputOutputRelation });
-        if (x.ImplWithChoice != null)
-        {
-          decls.AddRange(new Declaration[]
-            { x.ImplWithChoice, x.ImplWithChoice.Proc, x.InputOutputRelationWithChoice });
-        }
+          decls.AddRange(new Declaration[] { x });
+
       });
 
       // Commutativity checks
@@ -42,26 +38,8 @@ namespace Microsoft.Boogie
         MoverCheck.AddCheckers(civlTypeChecker, decls);
       }
 
-      // Desugaring of yielding procedures
-      if (!options.TrustInvariants)
-      {
-         YieldingProcChecker.AddInvariantCheckers(civlTypeChecker, decls);
-      }
+      decls.AddRange(civlTypeChecker.precomputedCheckers);
       
-      if (!options.TrustRefinement)
-      {
-         YieldingProcChecker.AddRefinementCheckers(civlTypeChecker, decls);
-         if (!options.TrustSequentialization)
-         {
-            Sequentialization.AddCheckers(civlTypeChecker, decls);
-         }
-      }
-      
-      foreach (var action in civlTypeChecker.AtomicActions)
-      {
-        action.AddTriggerAssumes(program, options);
-      }
-
       // Remove original declarations and add new checkers generated above
       program.RemoveTopLevelDeclarations(x => originalDecls.Contains(x));
       program.AddTopLevelDeclarations(decls);
