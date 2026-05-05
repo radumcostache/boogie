@@ -40,16 +40,6 @@ public class YieldRegionExtractor
     {
       return Equals(obj as CivlNode);
     }
-
-    public override int GetHashCode()
-    {
-      unchecked
-      {
-        int h = RuntimeHelpers.GetHashCode(Original);
-        h = (h * 397) ^ (ContextKey?.GetHashCode() ?? 0);
-        return h;
-      }
-    }
   }
 
   private sealed class LoopContext
@@ -160,11 +150,6 @@ public class YieldRegionExtractor
     public Block Header;
     public HashSet<Block> Blocks = new();
     public HashSet<(Block Source, Block Target)> BackEdges = new();
-
-    public override string ToString()
-    {
-      return $"Loop {LoopId}, Header={Header}";
-    }
   }
 
   private static void AddEdge(CivlGraph graph, CivlEdge edge)
@@ -212,16 +197,6 @@ public class YieldRegionExtractor
   private const string N = "N";
   private const string P = "P";
   private const string C = "C";
-  public static bool IsCurrentlyCheckEdge(CivlEdge edge)
-  {
-    if (edge.Action == null)
-    {
-      return edge.Label == C;
-    }
-
-    return edge.Action.ActionDecl.MoverType == MoverType.Check;
-  }
-
   public static bool IsCurrentlyLeftEdge(CivlEdge edge)
   {
     if (edge.Action == null)
@@ -507,11 +482,6 @@ public class YieldRegionExtractor
     }
 
     return loopsByHeader.Values.ToList();
-  }
-
-  private static bool IsBackEdgeOfLoop(LoopInfo loop, Block source, Block target)
-  {
-    return loop != null && loop.BackEdges.Contains((source, target));
   }
 
   private static Dictionary<(Block Source, Block Target), LoopInfo> BuildBackedgeMap(List<LoopInfo> loops)
