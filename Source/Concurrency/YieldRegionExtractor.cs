@@ -35,11 +35,6 @@ public class YieldRegionExtractor
       return ReferenceEquals(Original, other.Original) &&
             ContextKey == other.ContextKey;
     }
-
-    public override bool Equals(object obj)
-    {
-      return Equals(obj as CivlNode);
-    }
   }
 
   private sealed class LoopContext

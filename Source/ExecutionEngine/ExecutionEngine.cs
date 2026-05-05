@@ -736,7 +736,7 @@ namespace Microsoft.Boogie
         var declarationsToRestore = new HashSet<Declaration>();
         declarationsToRestore.UnionWith(program.TopLevelDeclarations);
         
-        civlTypeChecker.originalImpls.ForEach(x =>
+        CivlRewriter.originalImpls.ForEach(x =>
         {
             rdecls.AddRange(new Declaration[] { x });
 
@@ -809,10 +809,9 @@ namespace Microsoft.Boogie
       
       List<Declaration> ldecls = new List<Declaration>();
 
-      civlTypeChecker.originalImpls.ForEach(x =>
+      CivlRewriter.originalImpls.ForEach(x =>
       {
           ldecls.AddRange(new Declaration[] { x });
-
       });
 
       List<Tuple<Action, Action>> currentChecks = new List<Tuple<Action, Action>>();
@@ -1434,33 +1433,6 @@ namespace Microsoft.Boogie
         return PipelineOutcome.TypeCheckingError;
       }
 
-      List<Declaration> decls = civlTypeChecker.originalImpls;
-      civlTypeChecker.AtomicActions.ForEach(x =>
-      {
-        decls.AddRange(new Declaration[] { x.Impl, x.Impl.Proc, x.InputOutputRelation });
-        if (x.ImplWithChoice != null)
-        {
-          decls.AddRange(new Declaration[]
-            { x.ImplWithChoice, x.ImplWithChoice.Proc, x.InputOutputRelationWithChoice });
-        }
-      });
-      
-      if (!Options.TrustRefinement)
-      {
-        YieldingProcChecker.AddRefinementCheckers(civlTypeChecker, civlTypeChecker.precomputedCheckers);
-      
-        if (!Options.TrustSequentialization)
-        {
-            Sequentialization.AddCheckers(civlTypeChecker, civlTypeChecker.precomputedCheckers);
-        }
-      }
-
-      // Desugaring of yielding procedures
-      if (!Options.TrustInvariants)
-      {
-        YieldingProcChecker.AddInvariantCheckers(civlTypeChecker, civlTypeChecker.precomputedCheckers);
-      }
-
       // Precompute the nonblocking checkers for every action
       List<Declaration> NonBlockingCheckers = new List<Declaration>();
 
@@ -1472,10 +1444,7 @@ namespace Microsoft.Boogie
         NonBlockingCheckers.Clear();
       }
 
-      foreach (var action in civlTypeChecker.AtomicActions)
-      {
-        action.AddTriggerAssumes(civlTypeChecker.program, Options);
-      }
+      CivlRewriter.PrecomputeCheckers(Options, civlTypeChecker);
 
       if(Options.InferMoverTypes)
       {
@@ -1493,6 +1462,7 @@ namespace Microsoft.Boogie
         var elapsed = end - start;
         Options.OutputWriter.WriteLine($"Time taken to infer mover types: {elapsed.TotalSeconds} seconds");  
       }
+      
       if (!Options.TrustYieldSufficiency)
       {
         YieldSufficiencyChecker.TypeCheck(civlTypeChecker);
