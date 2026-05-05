@@ -763,11 +763,6 @@ namespace Microsoft.Boogie
         {
           program.AddTopLevelDeclarations(rdecls);
           new LinearTypeChecker.LinearTypeEraser().VisitProgram(program);
-        // { int oldPrintUnstructured = Options.PrintUnstructured;
-        // Options.PrintUnstructured = 1;
-        // PrintBplFile("BeforeInferAndVerify.bpl", program, false, true,
-        //   Options.PrettyPrint);
-        // Options.PrintUnstructured = oldPrintUnstructured; }
 
           UnusedVarEliminator.Eliminate(program);
           BlockCoalescer.CoalesceBlocks(program);
@@ -781,10 +776,6 @@ namespace Microsoft.Boogie
           var outcome = await InferAndVerify(output, program, rightStats, null);
 
           UpdateContextFromCheckResults(currentChecks, output.ToString(), context);
-          // if (Options.Trace)
-          // {
-          //   Console.Out.WriteLine(output.ToString());
-          // }
           return (outcome == PipelineOutcome.VerificationCompleted || outcome == PipelineOutcome.Done) && rightStats.ErrorCount == 0;
         }
         finally
@@ -872,28 +863,11 @@ namespace Microsoft.Boogie
         BlockCoalescer.CoalesceBlocks(program);
         Inline(program);
 
-        { int oldPrintUnstructured = Options.PrintUnstructured;
-        Options.PrintUnstructured = 1;
-        PrintBplFile("BeforeInferAndVerify.bpl", program, false, false,
-          Options.PrettyPrint);
-        Options.PrintUnstructured = oldPrintUnstructured; }
-
         var output = new StringWriter();
         var leftStats = new PipelineStatistics();
         var outcome = await InferAndVerify(output , program, leftStats, null);
-        
-        { int oldPrintUnstructured = Options.PrintUnstructured;
-        Options.PrintUnstructured = 1;
-        PrintBplFile("AfterInferAndVerify.bpl", civlTypeChecker.program, false, false,
-          Options.PrettyPrint);
-        Options.PrintUnstructured = oldPrintUnstructured; }
 
         UpdateContextFromCheckResults(currentChecks, output.ToString(), context);
-
-        if (Options.Trace)
-        {
-          Console.WriteLine(output.ToString());
-        }
 
         return (outcome == PipelineOutcome.VerificationCompleted || outcome == PipelineOutcome.Done) && leftStats.ErrorCount == 0;
       }
@@ -1422,6 +1396,10 @@ namespace Microsoft.Boogie
       if (Options.ExpandLambdas)
       {
         LambdaHelper.ExpandLambdas(Options, program);
+        if (Options.PrintFile != null && Options.PrintLambdaLifting)
+        {
+          PrintBplFile(Options.PrintFile, program, false, true, Options.PrettyPrint);
+        }
       }
 
       civlTypeChecker = new CivlTypeChecker(Options, program);
@@ -1789,6 +1767,15 @@ namespace Microsoft.Boogie
       CollectModifies(program);
       CoalesceBlocks(program);
       Inline(program);
+      
+      if (Options.ExpandLambdas)
+      {
+        LambdaHelper.ExpandLambdas(Options, program);
+        if (Options.PrintFile != null && Options.PrintLambdaLifting)
+        {
+          PrintBplFile(Options.PrintFile, program, false, true, Options.PrettyPrint);
+        }
+      }
 
       var processedProgram = await PreProcessProgramVerification(program, cancellationToken);
       return GetPrioritizedImplementations(program).SelectMany(implementation =>
