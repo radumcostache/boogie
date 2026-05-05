@@ -463,7 +463,6 @@ namespace Microsoft.Boogie
     {
       if (action.NonBlockingChecker != null)
       {
-        Console.WriteLine("Using precomputedNonBlocking");
         decls.AddRange(action.NonBlockingChecker);
         return;
       }

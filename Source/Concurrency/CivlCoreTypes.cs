@@ -89,7 +89,7 @@ namespace Microsoft.Boogie
     public bool IsConditionalLeftMover => IsLeftMover && ActionDecl.HasPreconditions;
 
     public bool IsUnconditionalLeftMover => IsLeftMover && !ActionDecl.HasPreconditions;
-    public bool IsConditional => !ActionDecl.HasPreconditions;
+    public bool IsConditional => ActionDecl.HasPreconditions;
 
     public int PendingAsyncStartIndex => ActionDecl.OutParams.Count;
 
